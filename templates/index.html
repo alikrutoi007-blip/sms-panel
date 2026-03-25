@@ -3,301 +3,575 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SMS Panel · Telnyx</title>
+<title>SMS Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
+/* ── Variables ── */
 :root {
-  --bg:#07080d;--s1:#0d0f18;--s2:#131624;--s3:#1a1e30;
-  --border:#1f2438;--border2:#2a3050;
-  --accent:#4fffb0;--accent2:#00d4ff;--adim:rgba(79,255,176,.1);--aglow:rgba(79,255,176,.2);
-  --red:#ff4f6a;--yellow:#ffd166;
-  --text:#d8dff0;--dim:#5a6280;--muted:#2a3050;
-  --out-bg:#1a3d2e;--out-text:#a8ffda;--in-bg:#131624;
+  --bg:    #07080d;
+  --s1:    #0d0f18;
+  --s2:    #131624;
+  --s3:    #1b1e2e;
+  --s4:    #222538;
+  --b:     #1f2438;
+  --b2:    #2a3050;
+  --b3:    #384060;
+  --a:     #4fffb0;
+  --a2:    #00d4ff;
+  --adim:  rgba(79,255,176,.1);
+  --aglow: rgba(79,255,176,.22);
+  --red:   #ff4f6a;
+  --yel:   #ffd166;
+  --ora:   #ff9f43;
+  --pur:   #a78bfa;
+  --t:     #d8dff0;
+  --td:    #5a6280;
+  --tm:    #2e3350;
+  --out-bg:  #1a3d2e;
+  --out-t:   #a8ffda;
+  --in-bg:   #131624;
+  --r: 10px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
-body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh}
+body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);display:flex;height:100vh}
 
-/* ── SIDEBAR ── */
-#sidebar{width:290px;min-width:290px;background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column}
-.sb-top{padding:16px 16px 0;border-bottom:1px solid var(--border)}
-.brand{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px}
-.brand-left{display:flex;align-items:center;gap:8px}
-.live-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--aglow);animation:blink 2s ease-in-out infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
-.brand-label{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
-.my-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--accent);background:var(--adim);border:1px solid rgba(79,255,176,.2);padding:3px 8px;border-radius:6px}
+/* ════════════════════════════════
+   LEFT SIDEBAR
+════════════════════════════════ */
+#sidebar{
+  width:280px;min-width:280px;
+  background:var(--s1);
+  border-right:1px solid var(--b);
+  display:flex;flex-direction:column;
+  z-index:10;
+}
 
-.tabs{display:flex;margin:0 -16px}
-.tab{flex:1;padding:10px 0;font-size:9px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);border:none;background:transparent;cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;font-family:'IBM Plex Mono',monospace;display:flex;flex-direction:column;align-items:center;gap:3px}
-.tab:hover{color:var(--text)}
-.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tab-icon{font-size:13px}
-.tab-badge{background:var(--red);color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:14px;text-align:center}
-.tab-badge.hidden{visibility:hidden}
+.sb-brand{
+  padding:15px 16px 12px;
+  border-bottom:1px solid var(--b);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.brand-l{display:flex;align-items:center;gap:8px}
+.ldot{width:7px;height:7px;border-radius:50%;background:var(--a);box-shadow:0 0 8px var(--aglow);animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.brand-name{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--td)}
+.my-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--a);background:var(--adim);border:1px solid rgba(79,255,176,.18);padding:3px 8px;border-radius:6px;letter-spacing:.02em}
 
-.sb-search{padding:10px 12px;border-bottom:1px solid var(--border)}
-.sb-search input{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text);outline:none;transition:border-color .2s}
-.sb-search input::placeholder{color:var(--muted)}
-.sb-search input:focus{border-color:var(--accent)}
+/* search bar */
+.sb-search{padding:10px 12px;border-bottom:1px solid var(--b);display:flex;gap:6px}
+.sb-search input{
+  flex:1;background:var(--s2);border:1px solid var(--b);border-radius:8px;
+  padding:7px 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;
+  color:var(--t);outline:none;transition:border-color .2s;
+}
+.sb-search input::placeholder{color:var(--tm)}
+.sb-search input:focus{border-color:var(--a)}
+.sb-search-btn{
+  width:32px;height:32px;border-radius:7px;border:1px solid var(--b);
+  background:var(--s2);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:var(--td);font-size:14px;flex-shrink:0;transition:all .15s;
+}
+.sb-search-btn:hover{border-color:var(--a);color:var(--a)}
 
-#contacts-list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+/* tabs */
+.tabs{display:flex;border-bottom:1px solid var(--b)}
+.tab{flex:1;padding:9px 0;font-size:9px;letter-spacing:.07em;text-transform:uppercase;color:var(--td);border:none;background:transparent;cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;font-family:'IBM Plex Mono',monospace;display:flex;flex-direction:column;align-items:center;gap:2px}
+.tab:hover{color:var(--t)}
+.tab.active{color:var(--a);border-bottom-color:var(--a)}
+.tab-icon{font-size:12px}
+.tbadge{background:var(--red);color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:14px;text-align:center}
+.tbadge.hidden{visibility:hidden}
 
-.contact-item{padding:11px 14px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.025);display:flex;align-items:center;gap:10px;transition:background .12s}
+#contacts-list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
+
+.contact-item{
+  padding:10px 14px;cursor:pointer;
+  border-bottom:1px solid rgba(255,255,255,.023);
+  display:flex;align-items:center;gap:10px;transition:background .12s;
+}
 .contact-item:hover{background:var(--s2)}
-.contact-item.active{background:var(--adim);border-left:2px solid var(--accent)}
+.contact-item.active{background:var(--adim);border-left:2px solid var(--a)}
 
-.avatar{width:36px;height:36px;border-radius:10px;background:var(--s3);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--dim);flex-shrink:0;border:1px solid var(--border);position:relative}
-.avatar.has-unread::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--s1)}
-.avatar.active-convo{border-color:var(--accent);color:var(--accent)}
+.av{
+  width:36px;height:36px;border-radius:10px;background:var(--s3);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);
+  flex-shrink:0;border:1px solid var(--b);position:relative;transition:border-color .2s;
+}
+.av.unread::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--s1)}
+.av.twoway{border-color:var(--a);color:var(--a)}
 
-.ci-info{flex:1;min-width:0}
-.ci-num{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ci-preview{font-size:11px;color:var(--dim);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ci{flex:1;min-width:0}
+.ci-name{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ci-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ci-meta{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
-.ci-time{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted)}
-.ci-pill{font-size:9px;font-weight:600;padding:2px 6px;border-radius:6px;letter-spacing:.04em}
-.pill-active{background:rgba(79,255,176,.12);color:var(--accent)}
-.pill-unread{background:rgba(255,79,106,.15);color:var(--red)}
-.pill-out{background:var(--s3);color:var(--dim)}
+.ci-time{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--tm)}
+.pill{font-size:9px;font-weight:600;padding:2px 6px;border-radius:6px;letter-spacing:.04em}
+.p-active{background:rgba(79,255,176,.12);color:var(--a)}
+.p-unread{background:rgba(255,79,106,.15);color:var(--red)}
+.p-out{background:var(--s3);color:var(--td)}
 
-.empty-contacts{padding:40px 20px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
+.empty-sb{padding:36px 20px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:var(--tm);text-transform:uppercase}
 
-.sb-footer{padding:12px 14px;border-top:1px solid var(--border)}
-.btn-new-chat{width:100%;padding:10px;border-radius:9px;background:var(--adim);border:1px solid rgba(79,255,176,.25);color:var(--accent);font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;cursor:pointer;transition:background .15s}
-.btn-new-chat:hover{background:rgba(79,255,176,.18)}
+.sb-footer{padding:12px 14px;border-top:1px solid var(--b)}
+.btn-newchat{width:100%;padding:9px;border-radius:9px;background:var(--adim);border:1px solid rgba(79,255,176,.22);color:var(--a);font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.07em;cursor:pointer;transition:background .15s}
+.btn-newchat:hover{background:rgba(79,255,176,.18)}
 
-/* ── BROADCAST PANEL ── */
-#broadcast-panel{display:none;flex:1;flex-direction:column;background:var(--bg);overflow-y:auto}
-#broadcast-panel.visible{display:flex}
-.bc-header{padding:20px 28px;border-bottom:1px solid var(--border);background:var(--s1)}
-.bc-header h2{font-size:15px;font-weight:600;letter-spacing:.04em}
-.bc-header p{font-size:12px;color:var(--dim);margin-top:3px}
-.bc-body{padding:24px 28px;display:flex;flex-direction:column;gap:20px;max-width:720px}
-.field-label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:6px;display:flex;align-items:center;justify-content:space-between}
-.field-hint{font-size:9px;color:var(--muted);font-style:italic;text-transform:none;letter-spacing:0}
-.field-input,.field-textarea{width:100%;background:var(--s1);border:1px solid var(--border);border-radius:9px;padding:10px 14px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);outline:none;transition:border-color .2s}
-.field-input::placeholder,.field-textarea::placeholder{color:var(--muted)}
-.field-input:focus,.field-textarea:focus{border-color:var(--accent)}
-.field-textarea{resize:vertical;min-height:90px;line-height:1.6}
-.numbers-area{width:100%;background:var(--s1);border:1px solid var(--border);border-radius:9px;padding:10px 14px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text);outline:none;transition:border-color .2s;resize:vertical;min-height:130px;line-height:1.7}
-.numbers-area:focus{border-color:var(--accent)}
-.numbers-area::placeholder{color:var(--muted)}
-.drop-zone{border:2px dashed var(--border2);border-radius:9px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:8px}
-.drop-zone:hover,.drop-zone.drag{border-color:var(--accent);background:var(--adim)}
-.drop-zone-text{font-size:12px;color:var(--dim)}
-.drop-zone-text span{color:var(--accent);cursor:pointer}
-#csv-file{display:none}
-.num-stats{display:flex;gap:12px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--dim)}
-.ns-item{display:flex;align-items:center;gap:4px}
-.ns-val{color:var(--accent);font-weight:500}
-.bc-actions{display:flex;gap:10px;align-items:center}
-.btn-broadcast{padding:11px 28px;border-radius:9px;background:var(--accent);border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:#07080d;letter-spacing:.06em;transition:opacity .15s,transform .1s}
-.btn-broadcast:hover{opacity:.9}
-.btn-broadcast:active{transform:scale(.97)}
-.btn-broadcast:disabled{opacity:.4;cursor:not-allowed}
-.btn-clear{padding:11px 18px;border-radius:9px;background:transparent;border:1px solid var(--border);color:var(--dim);font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;transition:border-color .15s,color .15s}
-.btn-clear:hover{border-color:var(--border2);color:var(--text)}
-.bc-progress{background:var(--s1);border:1px solid var(--border);border-radius:9px;padding:16px 18px}
-.bc-progress-title{font-size:12px;font-weight:600;margin-bottom:10px}
-.progress-bar-wrap{background:var(--s2);border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px}
-.progress-bar{height:100%;background:var(--accent);border-radius:4px;transition:width .4s}
-.progress-stats{display:flex;gap:16px;font-family:'IBM Plex Mono',monospace;font-size:10px}
-.ps-item{display:flex;flex-direction:column;gap:2px}
-.ps-val{font-size:14px;font-weight:600}
-.ps-val.green{color:var(--accent)}.ps-val.red{color:var(--red)}.ps-val.yellow{color:var(--yellow)}
-.ps-label{color:var(--dim)}
-.bc-history-title{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:10px}
-.hist-item{background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:6px;display:flex;align-items:center;gap:14px}
-.hist-icon{font-size:18px}
-.hist-info{flex:1;min-width:0}
-.hist-name{font-size:12px;font-weight:500}
-.hist-body{font-size:11px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hist-stats{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--dim);margin-top:4px}
-.hist-stats .ok{color:var(--accent)}.hist-stats .fail{color:var(--red)}
-.hist-right{text-align:right;flex-shrink:0}
-.hist-time{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted)}
-.status-badge{display:inline-block;margin-top:4px;font-size:9px;letter-spacing:.06em;font-family:'IBM Plex Mono',monospace;padding:2px 7px;border-radius:4px}
-.status-done{background:rgba(79,255,176,.1);color:var(--accent)}
-.status-running{background:rgba(255,209,102,.1);color:var(--yellow)}
+/* ════════════════════════════════
+   CENTER
+════════════════════════════════ */
+#center{flex:1;display:flex;flex-direction:column;background:var(--bg);min-width:0;position:relative}
 
-/* ── MAIN CHAT ── */
-#main{flex:1;display:flex;flex-direction:column;background:var(--bg);position:relative}
-#empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted)}
-.empty-icon{font-size:44px;opacity:.25}
-.empty-label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase}
+/* Empty state */
+#empty-center{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  color:var(--tm);
+}
+.ec-icon{font-size:40px;opacity:.2}
+.ec-text{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase}
+
+/* Broadcast panel in center */
+#broadcast-center{display:none;flex:1;flex-direction:column;overflow-y:auto}
+#broadcast-center.visible{display:flex}
+.bc-hdr{padding:18px 24px;border-bottom:1px solid var(--b);background:var(--s1)}
+.bc-hdr h2{font-size:14px;font-weight:600}
+.bc-hdr p{font-size:11px;color:var(--td);margin-top:2px}
+.bc-body{padding:20px 24px;display:flex;flex-direction:column;gap:18px;max-width:600px}
+.fl{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--td);margin-bottom:5px;display:flex;justify-content:space-between;align-items:center}
+.fhint{font-size:9px;color:var(--tm);font-style:italic;text-transform:none;letter-spacing:0}
+.fi,.fta{width:100%;background:var(--s1);border:1px solid var(--b);border-radius:8px;padding:9px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--t);outline:none;transition:border-color .2s}
+.fi::placeholder,.fta::placeholder{color:var(--tm)}
+.fi:focus,.fta:focus{border-color:var(--a)}
+.fta{resize:vertical;min-height:80px;line-height:1.6}
+.num-area{width:100%;background:var(--s1);border:1px solid var(--b);border-radius:8px;padding:9px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--t);outline:none;resize:vertical;min-height:120px;line-height:1.7}
+.num-area:focus{border-color:var(--a)}
+.num-area::placeholder{color:var(--tm)}
+.dropz{border:2px dashed var(--b2);border-radius:8px;padding:16px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:7px}
+.dropz:hover,.dropz.drag{border-color:var(--a);background:var(--adim)}
+.dropz p{font-size:12px;color:var(--td)}
+.dropz span{color:var(--a)}
+#csv-f{display:none}
+.nstats{display:flex;gap:14px;margin-top:5px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td)}
+.nsv{color:var(--a);font-weight:500}
+.bc-acts{display:flex;gap:10px}
+.btn-bc{padding:10px 24px;border-radius:8px;background:var(--a);border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:#07080d;letter-spacing:.06em;transition:opacity .15s,transform .1s}
+.btn-bc:hover{opacity:.9}
+.btn-bc:active{transform:scale(.97)}
+.btn-bc:disabled{opacity:.4;cursor:not-allowed}
+.btn-clr{padding:10px 16px;border-radius:8px;background:transparent;border:1px solid var(--b);color:var(--td);font-family:'IBM Plex Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
+.btn-clr:hover{border-color:var(--b2);color:var(--t)}
+.bc-prog{background:var(--s1);border:1px solid var(--b);border-radius:8px;padding:14px 16px}
+.bc-prog-title{font-size:12px;font-weight:600;margin-bottom:8px}
+.pbwrap{background:var(--s2);border-radius:3px;height:5px;overflow:hidden;margin-bottom:10px}
+.pb{height:100%;background:var(--a);border-radius:3px;transition:width .4s}
+.pstats{display:flex;gap:14px;font-family:'IBM Plex Mono',monospace;font-size:10px}
+.psi{display:flex;flex-direction:column;gap:2px}
+.psv{font-size:14px;font-weight:600}
+.psv.g{color:var(--a)}.psv.r{color:var(--red)}.psv.y{color:var(--yel)}
+.psl{color:var(--td)}
+.hist-title{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--td);margin-bottom:8px}
+.hist-item{background:var(--s1);border:1px solid var(--b);border-radius:7px;padding:11px 13px;margin-bottom:5px;display:flex;align-items:center;gap:12px}
+.hi-info{flex:1;min-width:0}
+.hi-name{font-size:12px;font-weight:500}
+.hi-body{font-size:11px;color:var(--td);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hi-st{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);margin-top:3px}
+.hi-st .ok{color:var(--a)}.hi-st .fl2{color:var(--red)}
+.hi-right{text-align:right;flex-shrink:0}
+.hi-time{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--tm)}
+.sbadge{display:inline-block;margin-top:3px;font-size:9px;letter-spacing:.05em;font-family:'IBM Plex Mono',monospace;padding:2px 6px;border-radius:4px}
+.s-done{background:rgba(79,255,176,.1);color:var(--a)}
+.s-run{background:rgba(255,209,102,.1);color:var(--yel)}
+
+/* Chat view */
 #chat-view{display:none;flex-direction:column;flex:1;overflow:hidden}
-.chat-hdr{padding:14px 22px;border-bottom:1px solid var(--border);background:var(--s1);display:flex;align-items:center;gap:14px}
-.chat-hdr-av{width:34px;height:34px;border-radius:9px;background:var(--s2);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--accent)}
+.chat-hdr{padding:13px 20px;border-bottom:1px solid var(--b);background:var(--s1);display:flex;align-items:center;gap:12px}
+.chat-hdr-av{width:34px;height:34px;border-radius:9px;background:var(--s2);border:1px solid var(--a);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--a);flex-shrink:0}
 .chat-hdr-info{flex:1}
-.chat-hdr-num{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:500;letter-spacing:.04em}
-.chat-hdr-via{font-size:10px;color:var(--dim);margin-top:1px;font-family:'IBM Plex Mono',monospace}
-.chat-hdr-status{display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--accent)}
-.hdr-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--aglow)}
-#messages-area{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:4px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
-.msg-row{display:flex;animation:msgIn .2s ease-out}
-@keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-.msg-row.out{justify-content:flex-end}
-.msg-row.in{justify-content:flex-start}
-.bubble{max-width:62%;padding:9px 13px;font-size:13px;line-height:1.55;word-break:break-word;position:relative}
-.msg-row.out .bubble{background:var(--out-bg);color:var(--out-text);border-radius:14px 14px 2px 14px;border:1px solid rgba(79,255,176,.15)}
-.msg-row.in .bubble{background:var(--in-bg);color:var(--text);border-radius:14px 14px 14px 2px;border:1px solid var(--border)}
-.bmeta{display:flex;align-items:center;gap:4px;margin-top:3px;opacity:.55}
-.btime{font-family:'IBM Plex Mono',monospace;font-size:9px}
-.bstatus{font-size:9px}
-.date-div{text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:10px 0 4px}
-.input-wrap{padding:14px 18px;border-top:1px solid var(--border);background:var(--s1);display:flex;gap:9px;align-items:flex-end}
-#msg-input{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:9px 13px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:var(--text);outline:none;resize:none;max-height:110px;min-height:40px;line-height:1.5;transition:border-color .2s}
-#msg-input::placeholder{color:var(--muted)}
-#msg-input:focus{border-color:var(--accent)}
-#send-btn{width:40px;height:40px;border-radius:9px;background:var(--accent);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s,transform .1s;color:#07080d}
+.chat-hdr-name{font-size:13px;font-weight:600}
+.chat-hdr-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);margin-top:1px}
+.chat-live{display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--a)}
+.hd{width:6px;height:6px;border-radius:50%;background:var(--a);box-shadow:0 0 6px var(--aglow)}
+#msgs{flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:4px;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
+.mr{display:flex;animation:mi .2s ease-out}
+@keyframes mi{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.mr.out{justify-content:flex-end}
+.mr.in{justify-content:flex-start}
+.bbl{max-width:64%;padding:9px 12px;font-size:13px;line-height:1.55;word-break:break-word}
+.mr.out .bbl{background:var(--out-bg);color:var(--out-t);border-radius:14px 14px 2px 14px;border:1px solid rgba(79,255,176,.13)}
+.mr.in .bbl{background:var(--in-bg);color:var(--t);border-radius:14px 14px 14px 2px;border:1px solid var(--b)}
+.bm{display:flex;align-items:center;gap:4px;margin-top:3px;opacity:.5}
+.bt{font-family:'IBM Plex Mono',monospace;font-size:9px}
+.bs{font-size:9px}
+.ddiv{text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--tm);margin:8px 0 4px}
+.input-row{padding:12px 16px;border-top:1px solid var(--b);background:var(--s1);display:flex;gap:8px;align-items:flex-end}
+#msg-inp{flex:1;background:var(--s2);border:1px solid var(--b);border-radius:9px;padding:9px 12px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:var(--t);outline:none;resize:none;max-height:110px;min-height:40px;line-height:1.5;transition:border-color .2s}
+#msg-inp::placeholder{color:var(--tm)}
+#msg-inp:focus{border-color:var(--a)}
+#send-btn{width:40px;height:40px;border-radius:9px;background:var(--a);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s,transform .1s;color:#07080d}
 #send-btn:hover{opacity:.9}
 #send-btn:active{transform:scale(.93)}
 #send-btn:disabled{opacity:.35;cursor:not-allowed}
 
-/* ── MODAL ── */
+/* ════════════════════════════════
+   RIGHT INFO PANEL
+════════════════════════════════ */
+#info-panel{
+  width:272px;min-width:272px;
+  background:var(--s1);
+  border-left:1px solid var(--b);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}
+
+/* Dashboard (default state) */
+#panel-dash{display:flex;flex:1;flex-direction:column;overflow-y:auto}
+#panel-dash.hidden{display:none}
+
+.dash-hdr{padding:16px 16px 10px;border-bottom:1px solid var(--b)}
+.dash-hdr-title{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--td);margin-bottom:2px}
+.dash-hdr-sub{font-size:11px;color:var(--tm)}
+
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:14px 14px 0}
+.stat-card{background:var(--s2);border:1px solid var(--b);border-radius:9px;padding:12px 12px 10px}
+.stat-val{font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:600;line-height:1}
+.stat-val.green{color:var(--a)}
+.stat-val.red{color:var(--red)}
+.stat-val.blue{color:var(--a2)}
+.stat-val.yellow{color:var(--yel)}
+.stat-label{font-size:10px;color:var(--td);margin-top:5px}
+
+.dash-section{padding:12px 14px;border-top:1px solid var(--b);margin-top:10px}
+.dash-section-title{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--tm);margin-bottom:10px}
+
+/* Quick new chat form inside dash */
+.qform-row{display:flex;flex-direction:column;gap:7px}
+.qf-input{width:100%;background:var(--s2);border:1px solid var(--b);border-radius:7px;padding:8px 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--t);outline:none;transition:border-color .2s}
+.qf-input::placeholder{color:var(--tm)}
+.qf-input:focus{border-color:var(--a)}
+.btn-qsend{width:100%;padding:8px;border-radius:7px;background:var(--a);border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:#07080d;letter-spacing:.05em;transition:opacity .15s}
+.btn-qsend:hover{opacity:.9}
+
+/* Contact panel state */
+#panel-contact{display:none;flex:1;flex-direction:column;overflow-y:auto}
+#panel-contact.visible{display:flex}
+
+.cp-hdr{padding:14px 16px 12px;border-bottom:1px solid var(--b)}
+.cp-back{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--td);letter-spacing:.07em;text-transform:uppercase;cursor:pointer;margin-bottom:10px;display:inline-flex;align-items:center;gap:4px;transition:color .15s}
+.cp-back:hover{color:var(--a)}
+.cp-av-big{width:56px;height:56px;border-radius:14px;background:var(--s3);border:1px solid var(--a);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:15px;color:var(--a);margin-bottom:10px}
+.cp-phone{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--td);margin-bottom:3px}
+.save-indicator{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--a);opacity:0;transition:opacity .3s;height:12px}
+.save-indicator.show{opacity:1}
+
+.cp-field{padding:0 16px 12px}
+.cp-label{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:var(--tm);margin-bottom:5px}
+.cp-input,.cp-textarea{
+  width:100%;background:var(--s2);border:1px solid var(--b);
+  border-radius:7px;padding:8px 10px;
+  font-family:'IBM Plex Sans',sans-serif;font-size:12px;
+  color:var(--t);outline:none;transition:border-color .2s;
+}
+.cp-input::placeholder,.cp-textarea::placeholder{color:var(--tm)}
+.cp-input:focus,.cp-textarea:focus{border-color:var(--a)}
+.cp-textarea{resize:none;height:80px;line-height:1.5}
+
+/* Tags */
+.tags-wrap{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px}
+.tag-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;font-size:10px;font-weight:600;font-family:'IBM Plex Mono',monospace;cursor:pointer;transition:opacity .15s}
+.tag-chip:hover{opacity:.75}
+.tag-chip .tx{cursor:pointer;opacity:.6;margin-left:1px}
+.tag-input-row{display:flex;gap:5px}
+.tag-input{flex:1;background:var(--s2);border:1px solid var(--b);border-radius:6px;padding:5px 8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--t);outline:none;transition:border-color .2s}
+.tag-input:focus{border-color:var(--a)}
+.tag-input::placeholder{color:var(--tm)}
+.tag-add-btn{padding:5px 9px;border-radius:6px;background:var(--adim);border:1px solid rgba(79,255,176,.2);color:var(--a);font-size:12px;cursor:pointer;transition:background .15s}
+.tag-add-btn:hover{background:rgba(79,255,176,.18)}
+
+/* Contact stats */
+.cp-stats{padding:12px 16px;border-top:1px solid var(--b);background:var(--s2);margin-top:auto}
+.cp-stats-title{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:var(--tm);margin-bottom:8px}
+.cps-row{display:flex;justify-content:space-between;margin-bottom:4px}
+.cps-label{font-size:11px;color:var(--td)}
+.cps-val{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--t);font-weight:500}
+.cps-val.green{color:var(--a)}
+.cps-val.blue{color:var(--a2)}
+
+/* ════════════════════════════════
+   SEARCH OVERLAY
+════════════════════════════════ */
+#search-ov{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,.7);backdrop-filter:blur(6px);
+  z-index:200;align-items:flex-start;justify-content:center;
+  padding-top:80px;
+}
+#search-ov.open{display:flex}
+.search-box{
+  background:var(--s1);border:1px solid var(--b2);border-radius:14px;
+  width:560px;max-width:90vw;box-shadow:0 30px 80px rgba(0,0,0,.6);
+  animation:sovIn .18s ease-out;overflow:hidden;
+}
+@keyframes sovIn{from{opacity:0;transform:scale(.95) translateY(-10px)}to{opacity:1;transform:none}}
+.search-inp-row{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--b)}
+.search-inp-row span{font-size:18px;flex-shrink:0;opacity:.5}
+#search-q{flex:1;background:transparent;border:none;font-family:'IBM Plex Sans',sans-serif;font-size:14px;color:var(--t);outline:none}
+#search-q::placeholder{color:var(--tm)}
+.search-close{background:none;border:none;color:var(--td);cursor:pointer;font-size:16px;opacity:.6;transition:opacity .15s}
+.search-close:hover{opacity:1}
+#search-results{max-height:380px;overflow-y:auto;padding:8px 0;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
+.sr-item{padding:10px 16px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.025);transition:background .12s}
+.sr-item:hover{background:var(--s2)}
+.sr-num{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;color:var(--a)}
+.sr-body{font-size:12px;color:var(--t);margin-top:2px}
+.sr-body mark{background:rgba(79,255,176,.25);color:var(--a);border-radius:2px;padding:0 2px}
+.sr-meta{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--tm);margin-top:3px}
+.sr-empty{padding:24px;text-align:center;font-size:12px;color:var(--tm)}
+
+/* ════════════════════════════════
+   MODAL (new chat)
+════════════════════════════════ */
 .modal-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(5px);z-index:100;align-items:center;justify-content:center}
 .modal-ov.open{display:flex}
-.modal{background:var(--s1);border:1px solid var(--border2);border-radius:14px;padding:26px;width:340px;box-shadow:0 24px 60px rgba(0,0,0,.6);animation:mIn .18s ease-out}
+.modal{background:var(--s1);border:1px solid var(--b2);border-radius:14px;padding:24px;width:320px;box-shadow:0 24px 60px rgba(0,0,0,.6);animation:mIn .18s ease-out}
 @keyframes mIn{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:none}}
-.modal h3{font-size:14px;font-weight:600;margin-bottom:18px}
-.mlabel{display:block;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
-.minput{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);outline:none;margin-bottom:14px;transition:border-color .2s}
-.minput:focus{border-color:var(--accent)}
-.m-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
-.btn{padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.04em;transition:all .15s}
-.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--dim)}
-.btn-ghost:hover{border-color:var(--border2);color:var(--text)}
-.btn-prim{background:var(--accent);color:#07080d}
+.modal h3{font-size:14px;font-weight:600;margin-bottom:16px}
+.ml{display:block;font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:var(--td);margin-bottom:4px;font-family:'IBM Plex Mono',monospace}
+.mi{width:100%;background:var(--s2);border:1px solid var(--b);border-radius:7px;padding:8px 10px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--t);outline:none;margin-bottom:12px;transition:border-color .2s}
+.mi:focus{border-color:var(--a)}
+.mact{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+.btn{padding:8px 16px;border-radius:7px;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.04em;transition:all .15s}
+.btn-ghost{background:transparent;border:1px solid var(--b);color:var(--td)}
+.btn-ghost:hover{border-color:var(--b2);color:var(--t)}
+.btn-prim{background:var(--a);color:#07080d}
 .btn-prim:hover{opacity:.9}
 
 /* toast */
-#toast{position:fixed;bottom:20px;right:20px;background:var(--s2);border:1px solid var(--border);border-radius:9px;padding:11px 16px;font-family:'IBM Plex Mono',monospace;font-size:11px;opacity:0;transform:translateY(8px);transition:all .25s;z-index:200;pointer-events:none;max-width:280px}
+#toast{position:fixed;bottom:18px;right:18px;background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px 15px;font-family:'IBM Plex Mono',monospace;font-size:11px;opacity:0;transform:translateY(8px);transition:all .25s;z-index:300;pointer-events:none;max-width:260px}
 #toast.show{opacity:1;transform:none}
 #toast.err{border-color:var(--red);color:var(--red)}
-#toast.ok{border-color:var(--accent);color:var(--accent)}
+#toast.ok{border-color:var(--a);color:var(--a)}
 
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+::-webkit-scrollbar-thumb{background:var(--b);border-radius:2px}
 </style>
 </head>
 <body>
 
+<!-- ════════ LEFT SIDEBAR ════════ -->
 <aside id="sidebar">
-  <div class="sb-top">
-    <div class="brand">
-      <div class="brand-left"><div class="live-dot"></div><span class="brand-label">SMS Panel</span></div>
-      <span class="my-chip">{{ my_number }}</span>
+  <div class="sb-brand">
+    <div class="brand-l">
+      <div class="ldot"></div>
+      <span class="brand-name">SMS Panel</span>
     </div>
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('all',this)"><span class="tab-icon">💬</span><span>Все</span></button>
-      <button class="tab" onclick="switchTab('active',this)"><span class="tab-icon">🔄</span><span>Активные</span></button>
-      <button class="tab" onclick="switchTab('unread',this)"><span class="tab-icon">🔴</span><span>Новые</span><span class="tab-badge hidden" id="unread-badge">0</span></button>
-      <button class="tab" onclick="switchTab('broadcast',this)"><span class="tab-icon">📢</span><span>Рассылка</span></button>
-    </div>
+    <span class="my-chip">{{ my_number }}</span>
   </div>
 
-  <div class="sb-search" id="search-wrap">
-    <input type="text" id="search-input" placeholder="Поиск по номеру...">
+  <div class="sb-search">
+    <input id="contact-search" type="text" placeholder="Поиск контактов...">
+    <button class="sb-search-btn" onclick="openSearch()" title="Поиск по сообщениям">🔍</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('all',this)"><span class="tab-icon">💬</span><span>Все</span></button>
+    <button class="tab" onclick="switchTab('active',this)"><span class="tab-icon">🔄</span><span>Активные</span></button>
+    <button class="tab" onclick="switchTab('unread',this)"><span class="tab-icon">🔴</span><span>Новые</span><span class="tbadge hidden" id="ubadge">0</span></button>
+    <button class="tab" onclick="switchTab('broadcast',this)"><span class="tab-icon">📢</span><span>Рассылка</span></button>
   </div>
 
   <div id="contacts-list"></div>
 
   <div class="sb-footer" id="sb-footer">
-    <button class="btn-new-chat" onclick="openNewChat()">+ Новый чат</button>
+    <button class="btn-newchat" onclick="openModal()">+ Новый чат</button>
   </div>
 </aside>
 
-<!-- BROADCAST -->
-<div id="broadcast-panel">
-  <div class="bc-header">
-    <h2>📢 Массовая рассылка</h2>
-    <p>Загрузите CSV/TXT или вставьте номера вручную, напишите текст — отправим всем</p>
+<!-- ════════ CENTER ════════ -->
+<main id="center">
+  <!-- Empty state -->
+  <div id="empty-center">
+    <div class="ec-icon">💬</div>
+    <div class="ec-text">Выберите переписку</div>
   </div>
-  <div class="bc-body">
 
-    <div>
-      <div class="field-label">Название кампании</div>
-      <input class="field-input" id="bc-name" placeholder="Промо ноябрь">
+  <!-- Broadcast panel -->
+  <div id="broadcast-center">
+    <div class="bc-hdr">
+      <h2>📢 Массовая рассылка</h2>
+      <p>Загрузите CSV/TXT или вставьте номера вручную</p>
     </div>
-
-    <div>
-      <div class="field-label">Номера получателей <span class="field-hint">По одному на строку, формат +1XXXXXXXXXX</span></div>
-      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()">
-        <div class="drop-zone-text">Перетащите CSV/TXT сюда или <span>выберите файл</span></div>
+    <div class="bc-body">
+      <div>
+        <div class="fl">Название кампании</div>
+        <input class="fi" id="bc-name" placeholder="Промо ноябрь">
       </div>
-      <input type="file" id="csv-file" accept=".csv,.txt" onchange="handleFile(this)">
-      <textarea class="numbers-area" id="bc-numbers" placeholder="+13862068173&#10;+14155552671&#10;+17325550198" oninput="updateNumStats()"></textarea>
-      <div class="num-stats">
-        Всего: <span class="ns-val" id="ns-total">0</span>&nbsp;&nbsp;
-        Валидных: <span class="ns-val" id="ns-valid">0</span>&nbsp;&nbsp;
-        Дубли: <span class="ns-val" id="ns-dupes">0</span>
+      <div>
+        <div class="fl">Номера <span class="fhint">По одному на строку, формат +1XXXXXXXXXX</span></div>
+        <div class="dropz" id="dropz" onclick="document.getElementById('csv-f').click()">
+          <p>Перетащите CSV/TXT или <span>выберите файл</span></p>
+        </div>
+        <input type="file" id="csv-f" accept=".csv,.txt" onchange="handleFile(this)">
+        <textarea class="num-area" id="bc-nums" placeholder="+13862068173&#10;+14155552671" oninput="updateNS()"></textarea>
+        <div class="nstats">Всего: <span class="nsv" id="ns-t">0</span>&nbsp;&nbsp;Валидных: <span class="nsv" id="ns-v">0</span>&nbsp;&nbsp;Дублей: <span class="nsv" id="ns-d">0</span></div>
       </div>
-    </div>
-
-    <div>
-      <div class="field-label">Текст сообщения <span class="field-hint" id="char-count">0 / 160</span></div>
-      <textarea class="field-textarea" id="bc-text" placeholder="Привет! Специальное предложение для вас..." oninput="updateCharCount()"></textarea>
-    </div>
-
-    <div class="bc-actions">
-      <button class="btn-broadcast" id="bc-btn" onclick="startBroadcast()">▶ Запустить</button>
-      <button class="btn-clear" onclick="clearBroadcast()">Очистить</button>
-    </div>
-
-    <div class="bc-progress" id="bc-progress" style="display:none">
-      <div class="bc-progress-title" id="bc-prog-title">Рассылка...</div>
-      <div class="progress-bar-wrap"><div class="progress-bar" id="bc-bar" style="width:0%"></div></div>
-      <div class="progress-stats">
-        <div class="ps-item"><span class="ps-val green" id="ps-sent">0</span><span class="ps-label">Отправлено</span></div>
-        <div class="ps-item"><span class="ps-val red" id="ps-fail">0</span><span class="ps-label">Ошибок</span></div>
-        <div class="ps-item"><span class="ps-val yellow" id="ps-remain">0</span><span class="ps-label">Осталось</span></div>
+      <div>
+        <div class="fl">Текст сообщения <span class="fhint" id="cc">0 / 160</span></div>
+        <textarea class="fta" id="bc-text" placeholder="Привет! Специальное предложение..." oninput="updateCC()"></textarea>
       </div>
-    </div>
-
-    <div>
-      <div class="bc-history-title">История рассылок</div>
-      <div id="bc-hist-list"></div>
+      <div class="bc-acts">
+        <button class="btn-bc" id="bc-btn" onclick="startBroadcast()">▶ Запустить</button>
+        <button class="btn-clr" onclick="clearBC()">Очистить</button>
+      </div>
+      <div class="bc-prog" id="bc-prog" style="display:none">
+        <div class="bc-prog-title" id="bc-ptitle">Рассылка...</div>
+        <div class="pbwrap"><div class="pb" id="bc-bar" style="width:0%"></div></div>
+        <div class="pstats">
+          <div class="psi"><span class="psv g" id="ps-s">0</span><span class="psl">Отправлено</span></div>
+          <div class="psi"><span class="psv r" id="ps-f">0</span><span class="psl">Ошибок</span></div>
+          <div class="psi"><span class="psv y" id="ps-r">0</span><span class="psl">Осталось</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="hist-title">История рассылок</div>
+        <div id="bc-hist"></div>
+      </div>
     </div>
   </div>
-</div>
 
-<!-- MAIN -->
-<main id="main">
-  <div id="empty-state">
-    <div class="empty-icon">💬</div>
-    <div class="empty-label">Выберите переписку</div>
-  </div>
+  <!-- Chat view -->
   <div id="chat-view">
     <div class="chat-hdr">
       <div class="chat-hdr-av" id="chat-av"></div>
       <div class="chat-hdr-info">
+        <div class="chat-hdr-name" id="chat-name"></div>
         <div class="chat-hdr-num" id="chat-num"></div>
-        <div class="chat-hdr-via" id="chat-via"></div>
       </div>
-      <div class="chat-hdr-status"><div class="hdr-dot"></div><span>активен</span></div>
+      <div class="chat-live"><div class="hd"></div><span>live</span></div>
     </div>
-    <div id="messages-area"></div>
-    <div class="input-wrap">
-      <textarea id="msg-input" placeholder="Сообщение... (Enter — отправить)" rows="1"></textarea>
-      <button id="send-btn" onclick="sendMessage()">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    <div id="msgs"></div>
+    <div class="input-row">
+      <textarea id="msg-inp" placeholder="Сообщение... (Enter — отправить)" rows="1"></textarea>
+      <button id="send-btn" onclick="sendMsg()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </div>
   </div>
 </main>
 
-<!-- MODAL -->
+<!-- ════════ RIGHT INFO PANEL ════════ -->
+<aside id="info-panel">
+
+  <!-- DASHBOARD (shown when no contact selected) -->
+  <div id="panel-dash">
+    <div class="dash-hdr">
+      <div class="dash-hdr-title">Обзор</div>
+      <div class="dash-hdr-sub" id="dash-date"></div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-val green" id="st-contacts">—</div>
+        <div class="stat-label">Контактов</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val yellow" id="st-unread">—</div>
+        <div class="stat-label">Непрочитанных</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val blue" id="st-sent">—</div>
+        <div class="stat-label">Отправлено сегодня</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val" id="st-recv">—</div>
+        <div class="stat-label">Получено сегодня</div>
+      </div>
+    </div>
+
+    <div class="dash-section">
+      <div class="dash-section-title">Быстрый чат</div>
+      <div class="qform-row">
+        <input class="qf-input" id="q-num" placeholder="+13862068173" type="tel">
+        <input class="qf-input" id="q-msg" placeholder="Текст сообщения">
+        <button class="btn-qsend" onclick="quickSend()">Отправить →</button>
+      </div>
+    </div>
+
+    <div class="dash-section">
+      <div class="dash-section-title">Быстрый поиск</div>
+      <div class="qform-row">
+        <input class="qf-input" id="q-search" placeholder="Найти в сообщениях..." onkeydown="if(event.key==='Enter')openSearch(this.value)">
+        <button class="btn-qsend" style="background:var(--s3);color:var(--td);border:1px solid var(--b)" onclick="openSearch(document.getElementById('q-search').value)">Искать →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTACT CARD (shown when contact is open) -->
+  <div id="panel-contact">
+    <div class="cp-hdr">
+      <div class="cp-back" onclick="collapseContact()">← Назад</div>
+      <div class="cp-av-big" id="cp-av"></div>
+      <div class="cp-phone" id="cp-phone"></div>
+      <div class="save-indicator" id="save-ind">✓ Сохранено</div>
+    </div>
+
+    <div class="cp-field" style="padding-top:12px">
+      <div class="cp-label">Имя</div>
+      <input class="cp-input" id="cp-name" placeholder="Имя контакта" oninput="schedSave()">
+    </div>
+
+    <div class="cp-field">
+      <div class="cp-label">Компания</div>
+      <input class="cp-input" id="cp-company" placeholder="Компания" oninput="schedSave()">
+    </div>
+
+    <div class="cp-field">
+      <div class="cp-label">Теги</div>
+      <div class="tags-wrap" id="tags-wrap"></div>
+      <div class="tag-input-row">
+        <input class="tag-input" id="tag-inp" placeholder="Добавить тег..." onkeydown="if(event.key==='Enter'||event.key===','){event.preventDefault();addTag()}">
+        <button class="tag-add-btn" onclick="addTag()">+</button>
+      </div>
+    </div>
+
+    <div class="cp-field">
+      <div class="cp-label">Заметки</div>
+      <textarea class="cp-textarea" id="cp-notes" placeholder="Заметки о контакте..." oninput="schedSave()"></textarea>
+    </div>
+
+    <div class="cp-stats">
+      <div class="cp-stats-title">Статистика</div>
+      <div class="cps-row"><span class="cps-label">Отправлено</span><span class="cps-val green" id="cps-sent">—</span></div>
+      <div class="cps-row"><span class="cps-label">Получено</span><span class="cps-val blue" id="cps-recv">—</span></div>
+      <div class="cps-row"><span class="cps-label">Первое сообщение</span><span class="cps-val" id="cps-first">—</span></div>
+      <div class="cps-row"><span class="cps-label">Последнее</span><span class="cps-val" id="cps-last">—</span></div>
+    </div>
+  </div>
+</aside>
+
+<!-- SEARCH OVERLAY -->
+<div id="search-ov">
+  <div class="search-box">
+    <div class="search-inp-row">
+      <span>🔍</span>
+      <input id="search-q" placeholder="Поиск по всем сообщениям..." oninput="doSearch(this.value)" autofocus>
+      <button class="search-close" onclick="closeSearch()">✕</button>
+    </div>
+    <div id="search-results"><div class="sr-empty">Введите запрос...</div></div>
+  </div>
+</div>
+
+<!-- MODAL new chat -->
 <div class="modal-ov" id="new-modal">
   <div class="modal">
     <h3>📲 Новый чат</h3>
-    <label class="mlabel">Номер</label>
-    <input class="minput" id="m-to" placeholder="+13862068173">
-    <label class="mlabel">Сообщение</label>
-    <input class="minput" id="m-body" placeholder="Привет!">
-    <div class="m-actions">
+    <label class="ml">Номер</label>
+    <input class="mi" id="m-to" placeholder="+13862068173" type="tel">
+    <label class="ml">Сообщение</label>
+    <input class="mi" id="m-body" placeholder="Привет!">
+    <div class="mact">
       <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
       <button class="btn btn-prim" onclick="sendNew()">Отправить</button>
     </div>
@@ -308,232 +582,443 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 
 <script>
 const MY_NUMBER = "{{ my_number }}";
-let contacts=[], currentContact=null, currentTab='all', pollTimer=null, bcPollTimer=null;
+
+// ─── State ───
+let contacts = [];
+let currentContact = null;
+let currentTab = 'all';
+let pollTimer = null;
+let bcPollTimer = null;
+let saveTimer = null;
+let currentTags = [];
+let lastMsgIds = {};   // contact → max id seen
+let notifGranted = false;
+
+// TAG COLORS
+const TAG_COLORS = [
+  ['rgba(79,255,176,.15)','#4fffb0'],
+  ['rgba(0,212,255,.15)','#00d4ff'],
+  ['rgba(255,79,106,.15)','#ff4f6a'],
+  ['rgba(255,209,102,.15)','#ffd166'],
+  ['rgba(167,139,250,.15)','#a78bfa'],
+  ['rgba(255,159,67,.15)','#ff9f43'],
+];
+function tagColor(tag){const i=tag.split('').reduce((a,c)=>a+c.charCodeAt(0),0)%TAG_COLORS.length;return TAG_COLORS[i];}
+
+// ─── Notifications ───
+function initNotifications(){
+  if('Notification' in window){
+    Notification.requestPermission().then(p=>{notifGranted=p==='granted';});
+  }
+}
+function fireNotif(from, body){
+  if(!notifGranted) return;
+  new Notification(`SMS от ${from}`,{body,icon:''});
+}
 
 // ─── TABS ───
-function switchTab(tab, el) {
+function switchTab(tab, el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   currentTab = tab;
-  const isBc = tab === 'broadcast';
-  document.getElementById('broadcast-panel').classList.toggle('visible', isBc);
-  document.getElementById('main').style.display = isBc ? 'none' : 'flex';
-  document.getElementById('search-wrap').style.display = isBc ? 'none' : '';
-  document.getElementById('sb-footer').style.display = isBc ? 'none' : '';
-  document.getElementById('contacts-list').style.display = isBc ? 'none' : '';
-  if (isBc) loadBroadcastHistory();
-  else renderContacts();
+  const isBc = tab==='broadcast';
+  document.getElementById('broadcast-center').classList.toggle('visible', isBc);
+  document.getElementById('broadcast-center').style.display = isBc?'flex':'none';
+
+  if(isBc){
+    document.getElementById('chat-view').style.display='none';
+    document.getElementById('empty-center').style.display='none';
+    document.getElementById('sb-footer').style.display='none';
+    document.getElementById('contact-search').closest('.sb-search').style.display='none';
+    loadBCHistory();
+  } else {
+    document.getElementById('sb-footer').style.display='';
+    document.getElementById('contact-search').closest('.sb-search').style.display='';
+    if(!currentContact){
+      document.getElementById('empty-center').style.display='flex';
+      document.getElementById('chat-view').style.display='none';
+    }
+  }
+  renderContacts();
 }
 
 // ─── CONTACTS ───
-async function loadContacts() {
-  try {
-    contacts = await (await fetch('/api/contacts')).json();
+async function loadContacts(){
+  try{
+    const r = await fetch('/api/contacts');
+    const newContacts = await r.json();
+    // Check for new inbound messages → notifications
+    newContacts.forEach(c=>{
+      if(c.inbound_count > 0){
+        const prevId = lastMsgIds[c.contact] || 0;
+        if(c.unread > 0 && c.contact !== currentContact){
+          // fire once per new unread batch
+          if(!lastMsgIds[c.contact+'_notified']){
+            fireNotif(c.name||c.contact, 'Новое сообщение');
+            lastMsgIds[c.contact+'_notified'] = true;
+          }
+        } else if(c.unread === 0){
+          delete lastMsgIds[c.contact+'_notified'];
+        }
+      }
+    });
+    contacts = newContacts;
     updateUnreadBadge();
     renderContacts();
-  } catch(e) {}
+  }catch(e){}
 }
 
-function renderContacts() {
-  const q = document.getElementById('search-input').value.toLowerCase();
+function renderContacts(){
+  const q = document.getElementById('contact-search').value.toLowerCase();
   const el = document.getElementById('contacts-list');
-  let list = contacts;
-  if (currentTab==='active') list = list.filter(c=>c.inbound_count>0&&c.outbound_count>0);
-  else if (currentTab==='unread') list = list.filter(c=>c.unread>0);
-  if (q) list = list.filter(c=>c.contact.includes(q));
+  if(currentTab==='broadcast'){el.innerHTML='';return;}
 
-  if (!list.length) {
-    el.innerHTML=`<div class="empty-contacts">${
-      currentTab==='active'?'Нет двусторонних переписок':
-      currentTab==='unread'?'Нет непрочитанных':'Нет переписок'}</div>`;
+  let list = contacts;
+  if(currentTab==='active') list = list.filter(c=>c.inbound_count>0&&c.outbound_count>0);
+  else if(currentTab==='unread') list = list.filter(c=>c.unread>0);
+  if(q) list = list.filter(c=>c.contact.includes(q)||(c.name||'').toLowerCase().includes(q));
+
+  if(!list.length){
+    el.innerHTML=`<div class="empty-sb">${currentTab==='active'?'Нет двусторонних':currentTab==='unread'?'Всё прочитано':'Нет переписок'}</div>`;
     return;
   }
   el.innerHTML = list.map(c=>{
-    const active = c.inbound_count>0&&c.outbound_count>0;
-    const hasUnread = c.unread>0;
-    let pill = hasUnread?`<span class="ci-pill pill-unread">+${c.unread}</span>`:
-               active?`<span class="ci-pill pill-active">2-way</span>`:
-               `<span class="ci-pill pill-out">исх.</span>`;
-    return `<div class="contact-item ${currentContact===c.contact?'active':''}" onclick="openChat('${c.contact}','${c.my_number}')">
-      <div class="avatar ${hasUnread?'has-unread':''} ${active?'active-convo':''}">${c.contact.slice(-4)}</div>
-      <div class="ci-info"><div class="ci-num">${c.contact}</div><div class="ci-preview">via ${c.my_number}</div></div>
+    const twoway = c.inbound_count>0&&c.outbound_count>0;
+    const unread = c.unread>0;
+    const displayName = c.name||c.contact;
+    const subline = c.name ? c.contact : `via ${c.my_number}`;
+    let pill = unread?`<span class="pill p-unread">+${c.unread}</span>`:
+               twoway?`<span class="pill p-active">2-way</span>`:
+               `<span class="pill p-out">исх.</span>`;
+    const avClass = `av${unread?' unread':''}${twoway?' twoway':''}`;
+    const initials = (c.name?c.name.slice(0,2).toUpperCase():c.contact.slice(-4));
+    return `<div class="contact-item${currentContact===c.contact?' active':''}" onclick="openChat('${c.contact}','${c.my_number}')">
+      <div class="${avClass}">${initials}</div>
+      <div class="ci">
+        <div class="ci-name">${esc(displayName)}</div>
+        <div class="ci-num">${esc(subline)}</div>
+      </div>
       <div class="ci-meta"><span class="ci-time">${fmtTime(c.last_at)}</span>${pill}</div>
     </div>`;
   }).join('');
 }
 
-function updateUnreadBadge() {
+function updateUnreadBadge(){
   const n = contacts.reduce((s,c)=>s+(c.unread||0),0);
-  const b = document.getElementById('unread-badge');
+  const b = document.getElementById('ubadge');
   b.textContent=n; b.classList.toggle('hidden',n===0);
 }
 
-document.getElementById('search-input').addEventListener('input', renderContacts);
+document.getElementById('contact-search').addEventListener('input', renderContacts);
 
 // ─── CHAT ───
-async function openChat(contact, myNum) {
+async function openChat(contact, myNum){
   currentContact = contact;
-  if (currentTab==='broadcast') {
-    document.getElementById('broadcast-panel').classList.remove('visible');
-    document.getElementById('main').style.display='flex';
+  const c = contacts.find(x=>x.contact===contact)||{};
+  const displayName = c.name||contact;
+
+  if(currentTab==='broadcast'){
+    document.getElementById('broadcast-center').style.display='none';
+    document.getElementById('broadcast-center').classList.remove('visible');
   }
-  document.getElementById('empty-state').style.display='none';
+
+  document.getElementById('empty-center').style.display='none';
   document.getElementById('chat-view').style.display='flex';
-  document.getElementById('chat-num').textContent=contact;
-  document.getElementById('chat-via').textContent='через '+(myNum||MY_NUMBER);
-  document.getElementById('chat-av').textContent=contact.slice(-4);
+  document.getElementById('chat-name').textContent = displayName;
+  document.getElementById('chat-num').textContent = contact;
+  document.getElementById('chat-av').textContent = displayName.slice(0,2).toUpperCase();
+
   renderContacts();
-  await loadMessages();
+  await loadMsgs();
+  await openContactPanel(contact);
   startPoll();
 }
 
-async function loadMessages() {
-  if (!currentContact) return;
-  try {
+async function loadMsgs(){
+  if(!currentContact) return;
+  try{
     const msgs = await (await fetch(`/api/messages/${encodeURIComponent(currentContact)}`)).json();
-    renderMessages(msgs);
-  } catch(e) {}
+    renderMsgs(msgs);
+  }catch(e){}
 }
 
-function renderMessages(msgs) {
-  const area = document.getElementById('messages-area');
-  const atBot = area.scrollHeight-area.scrollTop-area.clientHeight<80;
+function renderMsgs(msgs){
+  const area = document.getElementById('msgs');
+  const atBot = area.scrollHeight-area.scrollTop-area.clientHeight < 80;
   let lastDate=null, html='';
   msgs.forEach(m=>{
     const d=m.created_at.slice(0,10);
-    if(d!==lastDate){html+=`<div class="date-div">${fmtDate(d)}</div>`;lastDate=d;}
-    const dir=m.direction==='outbound'?'out':'in';
-    const si=m.direction==='outbound'?`<span class="bstatus">${stIcon(m.status)}</span>`:'';
-    html+=`<div class="msg-row ${dir}"><div class="bubble">${escHtml(m.body)}<div class="bmeta"><span class="btime">${m.created_at.slice(11,16)}</span>${si}</div></div></div>`;
+    if(d!==lastDate){html+=`<div class="ddiv">${fmtDate(d)}</div>`;lastDate=d;}
+    const dir = m.direction==='outbound'?'out':'in';
+    const si  = m.direction==='outbound'?`<span class="bs">${stIcon(m.status)}</span>`:'';
+    html+=`<div class="mr ${dir}"><div class="bbl">${esc(m.body)}<div class="bm"><span class="bt">${m.created_at.slice(11,16)}</span>${si}</div></div></div>`;
   });
   area.innerHTML=html;
   if(atBot||msgs.length===0) area.scrollTop=area.scrollHeight;
 }
 
-async function sendMessage() {
-  const inp=document.getElementById('msg-input');
-  const text=inp.value.trim();
+async function sendMsg(){
+  const inp = document.getElementById('msg-inp');
+  const text = inp.value.trim();
   if(!text||!currentContact) return;
-  const btn=document.getElementById('send-btn');
+  const btn = document.getElementById('send-btn');
   btn.disabled=true; inp.value=''; inp.style.height='';
-  try {
-    const d=await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:currentContact,text,from:MY_NUMBER})})).json();
-    if(d.ok){await loadMessages();await loadContacts();}
+  try{
+    const d = await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:currentContact,text,from:MY_NUMBER})})).json();
+    if(d.ok){await loadMsgs();await loadContacts();}
     else showToast('Ошибка: '+(d.error||'?'),'err');
-  } catch(e){showToast('Сетевая ошибка','err');}
+  }catch(e){showToast('Сетевая ошибка','err');}
   btn.disabled=false; inp.focus();
 }
 
-document.getElementById('msg-input').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,110)+'px';});
-document.getElementById('msg-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}});
+document.getElementById('msg-inp').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,110)+'px';});
+document.getElementById('msg-inp').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}});
+
+// ─── CONTACT PANEL ───
+async function openContactPanel(phone){
+  document.getElementById('panel-dash').classList.add('hidden');
+  document.getElementById('panel-contact').classList.add('visible');
+  document.getElementById('cp-phone').textContent = phone;
+  document.getElementById('cp-av').textContent = phone.slice(-4);
+  currentTags=[];
+
+  try{
+    const d = await (await fetch(`/api/contact/${encodeURIComponent(phone)}`)).json();
+    document.getElementById('cp-name').value    = d.name    || '';
+    document.getElementById('cp-company').value = d.company || '';
+    document.getElementById('cp-notes').value   = d.notes   || '';
+
+    // Tags
+    currentTags = d.tags ? d.tags.split(',').map(t=>t.trim()).filter(Boolean) : [];
+    renderTags();
+
+    // Update chat header name if we got a real name
+    if(d.name){
+      document.getElementById('chat-name').textContent = d.name;
+      document.getElementById('chat-av').textContent = d.name.slice(0,2).toUpperCase();
+    }
+
+    // Stats
+    const s = d.stats||{};
+    document.getElementById('cps-sent').textContent  = s.sent    || '0';
+    document.getElementById('cps-recv').textContent  = s.received|| '0';
+    document.getElementById('cps-first').textContent = s.first_msg ? fmtDate(s.first_msg.slice(0,10)) : '—';
+    document.getElementById('cps-last').textContent  = s.last_msg  ? fmtDate(s.last_msg.slice(0,10))  : '—';
+  }catch(e){}
+}
+
+function collapseContact(){
+  currentContact = null;
+  document.getElementById('panel-dash').classList.remove('hidden');
+  document.getElementById('panel-contact').classList.remove('visible');
+  document.getElementById('chat-view').style.display='none';
+  document.getElementById('empty-center').style.display='flex';
+  renderContacts();
+  loadStats();
+}
+
+// ─── TAGS ───
+function renderTags(){
+  const wrap = document.getElementById('tags-wrap');
+  wrap.innerHTML = currentTags.map(t=>{
+    const [bg,fg]=tagColor(t);
+    return `<span class="tag-chip" style="background:${bg};color:${fg}" onclick="removeTag('${esc(t)}')">${esc(t)} <span class="tx">×</span></span>`;
+  }).join('');
+}
+
+function addTag(){
+  const inp = document.getElementById('tag-inp');
+  const val = inp.value.trim().replace(/,/g,'');
+  if(!val||currentTags.includes(val)) return;
+  currentTags.push(val);
+  inp.value='';
+  renderTags();
+  schedSave();
+}
+
+function removeTag(tag){
+  currentTags = currentTags.filter(t=>t!==tag);
+  renderTags();
+  schedSave();
+}
+
+// ─── AUTO-SAVE contact ───
+function schedSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveContact, 800);
+}
+
+async function saveContact(){
+  if(!currentContact) return;
+  const data = {
+    name:    document.getElementById('cp-name').value.trim(),
+    company: document.getElementById('cp-company').value.trim(),
+    tags:    currentTags.join(','),
+    notes:   document.getElementById('cp-notes').value.trim(),
+  };
+  try{
+    await fetch(`/api/contact/${encodeURIComponent(currentContact)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    const ind = document.getElementById('save-ind');
+    ind.classList.add('show');
+    setTimeout(()=>ind.classList.remove('show'),2000);
+    // Update contacts list to show new name
+    await loadContacts();
+  }catch(e){}
+}
+
+// ─── STATS dashboard ───
+async function loadStats(){
+  try{
+    const s = await (await fetch('/api/stats')).json();
+    document.getElementById('st-contacts').textContent = s.total_contacts;
+    document.getElementById('st-unread').textContent   = s.unread;
+    document.getElementById('st-sent').textContent     = s.today_sent;
+    document.getElementById('st-recv').textContent     = s.today_recv;
+  }catch(e){}
+}
+
+function setDashDate(){
+  const d = new Date();
+  document.getElementById('dash-date').textContent = d.toLocaleDateString('ru',{weekday:'long',day:'numeric',month:'long'});
+}
+
+// ─── QUICK SEND (from dashboard) ───
+async function quickSend(){
+  const to   = document.getElementById('q-num').value.trim();
+  const text = document.getElementById('q-msg').value.trim();
+  if(!to||!text){showToast('Заполни оба поля','err');return;}
+  try{
+    const d = await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,text,from:MY_NUMBER})})).json();
+    if(d.ok){
+      document.getElementById('q-num').value='';
+      document.getElementById('q-msg').value='';
+      showToast('Отправлено!','ok');
+      await loadContacts();
+      await openChat(to, MY_NUMBER);
+    } else showToast('Ошибка: '+(d.error||'?'),'err');
+  }catch(e){showToast('Сетевая ошибка','err');}
+}
+
+// ─── SEARCH OVERLAY ───
+let searchTimer=null;
+function openSearch(q=''){
+  document.getElementById('search-ov').classList.add('open');
+  const inp = document.getElementById('search-q');
+  inp.value = q||'';
+  inp.focus();
+  if(q) doSearch(q);
+}
+function closeSearch(){
+  document.getElementById('search-ov').classList.remove('open');
+  document.getElementById('search-results').innerHTML='<div class="sr-empty">Введите запрос...</div>';
+}
+document.getElementById('search-ov').addEventListener('click',e=>{if(e.target===e.currentTarget)closeSearch();});
+
+function doSearch(q){
+  clearTimeout(searchTimer);
+  if(q.length<2){document.getElementById('search-results').innerHTML='<div class="sr-empty">Минимум 2 символа</div>';return;}
+  searchTimer = setTimeout(async()=>{
+    try{
+      const res = await (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json();
+      const el  = document.getElementById('search-results');
+      if(!res.length){el.innerHTML='<div class="sr-empty">Ничего не найдено</div>';return;}
+      const re  = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
+      el.innerHTML = res.map(m=>`
+        <div class="sr-item" onclick="closeSearch();openChat('${m.contact}','${m.my_number}')">
+          <div class="sr-num">${esc(m.contact)} <span style="color:var(--td);font-size:9px">${m.direction==='inbound'?'← входящее':'→ исходящее'}</span></div>
+          <div class="sr-body">${esc(m.body).replace(re,match=>`<mark>${match}</mark>`)}</div>
+          <div class="sr-meta">${fmtDate(m.created_at.slice(0,10))} · ${m.created_at.slice(11,16)}</div>
+        </div>`).join('');
+    }catch(e){}
+  },250);
+}
 
 // ─── BROADCAST ───
-function updateNumStats() {
-  const raw=document.getElementById('bc-numbers').value;
-  const lines=raw.split('\n').map(l=>l.trim()).filter(Boolean);
+function updateNS(){
+  const lines=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
   const valid=lines.filter(l=>l.startsWith('+'));
-  const unique=[...new Set(valid)];
-  document.getElementById('ns-total').textContent=lines.length;
-  document.getElementById('ns-valid').textContent=unique.length;
-  document.getElementById('ns-dupes').textContent=valid.length-unique.length;
+  const uniq=[...new Set(valid)];
+  document.getElementById('ns-t').textContent=lines.length;
+  document.getElementById('ns-v').textContent=uniq.length;
+  document.getElementById('ns-d').textContent=valid.length-uniq.length;
 }
-function updateCharCount(){
-  const l=document.getElementById('bc-text').value.length;
-  document.getElementById('char-count').textContent=`${l} / 160`;
+function updateCC(){
+  document.getElementById('cc').textContent=document.getElementById('bc-text').value.length+' / 160';
 }
-function handleFile(input){
-  const file=input.files[0]; if(!file) return;
-  const reader=new FileReader();
-  reader.onload=e=>{
+function handleFile(inp){
+  const f=inp.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
     const nums=(e.target.result.match(/\+?[1-9]\d{7,14}/g)||[]).map(n=>n.startsWith('+')?n:'+'+n);
-    document.getElementById('bc-numbers').value=nums.join('\n');
-    updateNumStats();
-    showToast(`Загружено ${nums.length} номеров`,'ok');
-  };
-  reader.readAsText(file);
+    document.getElementById('bc-nums').value=nums.join('\n');
+    updateNS();showToast(`Загружено ${nums.length} номеров`,'ok');
+  };r.readAsText(f);
 }
-const dz=document.getElementById('drop-zone');
+const dz=document.getElementById('dropz');
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag');});
 dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
 dz.addEventListener('drop',e=>{
   e.preventDefault();dz.classList.remove('drag');
-  const f=e.dataTransfer.files[0]; if(!f) return;
-  const inp=document.getElementById('csv-file');
-  const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files; handleFile(inp);
+  const f=e.dataTransfer.files[0];if(!f)return;
+  const inp=document.getElementById('csv-f');
+  const dt=new DataTransfer();dt.items.add(f);inp.files=dt.files;handleFile(inp);
 });
 
 async function startBroadcast(){
   const name=document.getElementById('bc-name').value.trim()||'Рассылка';
-  const raw=document.getElementById('bc-numbers').value;
+  const nums=[...new Set(document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('+')))];
   const text=document.getElementById('bc-text').value.trim();
-  const numbers=[...new Set(raw.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('+')))];
-  if(!numbers.length){showToast('Добавь номера в формате +1...','err');return;}
-  if(!text){showToast('Напиши текст сообщения','err');return;}
+  if(!nums.length){showToast('Добавь номера','err');return;}
+  if(!text){showToast('Напиши текст','err');return;}
   document.getElementById('bc-btn').disabled=true;
-  document.getElementById('bc-progress').style.display='block';
-  document.getElementById('bc-prog-title').textContent=`Запускаем на ${numbers.length} номеров...`;
-  try {
-    const d=await (await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers,text,from:MY_NUMBER})})).json();
-    if(d.ok) pollBroadcast(d.broadcast_id,d.total);
+  document.getElementById('bc-prog').style.display='block';
+  document.getElementById('bc-ptitle').textContent=`Запускаем на ${nums.length} номеров...`;
+  try{
+    const d=await (await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers:nums,text,from:MY_NUMBER})})).json();
+    if(d.ok) pollBC(d.broadcast_id,d.total);
     else{showToast('Ошибка: '+d.error,'err');document.getElementById('bc-btn').disabled=false;}
-  } catch(e){showToast('Сетевая ошибка','err');document.getElementById('bc-btn').disabled=false;}
+  }catch(e){showToast('Сетевая ошибка','err');document.getElementById('bc-btn').disabled=false;}
 }
-
-function pollBroadcast(id,total){
+function pollBC(id,total){
   clearInterval(bcPollTimer);
   bcPollTimer=setInterval(async()=>{
     try{
       const d=await (await fetch(`/api/broadcast/${id}`)).json();
       const pct=total>0?Math.round((d.sent+d.failed)/total*100):0;
       document.getElementById('bc-bar').style.width=pct+'%';
-      document.getElementById('ps-sent').textContent=d.sent;
-      document.getElementById('ps-fail').textContent=d.failed;
-      document.getElementById('ps-remain').textContent=total-d.sent-d.failed;
-      document.getElementById('bc-prog-title').textContent=
-        d.status==='done'?`✅ Готово! Отправлено ${d.sent} из ${total}`:`Рассылка... ${pct}%`;
-      if(d.status==='done'){
-        clearInterval(bcPollTimer);
-        document.getElementById('bc-btn').disabled=false;
-        showToast(`Готово: ${d.sent} успешно, ${d.failed} ошибок`,d.failed?'err':'ok');
-        loadBroadcastHistory();
-      }
+      document.getElementById('ps-s').textContent=d.sent;
+      document.getElementById('ps-f').textContent=d.failed;
+      document.getElementById('ps-r').textContent=total-d.sent-d.failed;
+      document.getElementById('bc-ptitle').textContent=d.status==='done'?`✅ Готово! ${d.sent}/${total}`:`Рассылка... ${pct}%`;
+      if(d.status==='done'){clearInterval(bcPollTimer);document.getElementById('bc-btn').disabled=false;showToast(`Готово: ${d.sent} отправлено`,d.failed?'err':'ok');loadBCHistory();}
     }catch(e){}
   },1000);
 }
-
-async function loadBroadcastHistory(){
+async function loadBCHistory(){
   try{
     const list=await (await fetch('/api/broadcasts')).json();
-    const el=document.getElementById('bc-hist-list');
-    if(!list.length){el.innerHTML='<div class="empty-contacts" style="padding:16px 0">История пуста</div>';return;}
+    const el=document.getElementById('bc-hist');
+    if(!list.length){el.innerHTML='<div class="sr-empty">История пуста</div>';return;}
     el.innerHTML=list.map(b=>{
       const pct=b.total>0?Math.round(b.sent/b.total*100):0;
       return `<div class="hist-item">
-        <div class="hist-icon">📢</div>
-        <div class="hist-info">
-          <div class="hist-name">${escHtml(b.name)}</div>
-          <div class="hist-body">${escHtml(b.body)}</div>
-          <div class="hist-stats"><span class="ok">✓ ${b.sent}</span>&nbsp;<span class="fail">✗ ${b.failed}</span>&nbsp;/ всего ${b.total} · ${pct}%</div>
-        </div>
-        <div class="hist-right">
-          <div class="hist-time">${fmtTime(b.created_at)}</div>
-          <span class="status-badge ${b.status==='done'?'status-done':'status-running'}">${b.status==='done'?'готово':'в процессе'}</span>
-        </div>
+        <div style="font-size:18px">📢</div>
+        <div class="hi-info"><div class="hi-name">${esc(b.name)}</div><div class="hi-body">${esc(b.body)}</div><div class="hi-st"><span class="ok">✓${b.sent}</span> <span class="fl2">✗${b.failed}</span> / ${b.total} · ${pct}%</div></div>
+        <div class="hi-right"><div class="hi-time">${fmtTime(b.created_at)}</div><span class="sbadge ${b.status==='done'?'s-done':'s-run'}">${b.status==='done'?'готово':'в процессе'}</span></div>
       </div>`;
     }).join('');
   }catch(e){}
 }
-
-function clearBroadcast(){
-  document.getElementById('bc-numbers').value='';
+function clearBC(){
+  document.getElementById('bc-nums').value='';
   document.getElementById('bc-text').value='';
   document.getElementById('bc-name').value='';
-  document.getElementById('bc-progress').style.display='none';
-  updateNumStats(); updateCharCount();
+  document.getElementById('bc-prog').style.display='none';
+  updateNS();updateCC();
 }
 
 // ─── MODAL ───
-function openNewChat(){document.getElementById('new-modal').classList.add('open');document.getElementById('m-to').focus();}
+function openModal(){document.getElementById('new-modal').classList.add('open');document.getElementById('m-to').focus();}
 function closeModal(){document.getElementById('new-modal').classList.remove('open');}
 document.getElementById('new-modal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal();});
 async function sendNew(){
@@ -550,15 +1035,15 @@ async function sendNew(){
 // ─── POLL ───
 function startPoll(){
   clearInterval(pollTimer);
-  pollTimer=setInterval(async()=>{await loadContacts();if(currentContact)await loadMessages();},3000);
+  pollTimer=setInterval(async()=>{await loadContacts();if(currentContact)await loadMsgs();},3000);
 }
 
 // ─── HELPERS ───
 function fmtTime(iso){
   if(!iso) return '';
   const d=new Date(iso+(iso.includes('Z')?'':'Z'));
-  const now=new Date();
-  if(d.toDateString()===now.toDateString()) return d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+  const n=new Date();
+  if(d.toDateString()===n.toDateString()) return d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
   return d.toLocaleDateString('ru',{day:'2-digit',month:'2-digit'});
 }
 function fmtDate(d){
@@ -568,15 +1053,22 @@ function fmtDate(d){
   return new Date(d).toLocaleDateString('ru',{day:'numeric',month:'long'});
 }
 function stIcon(s){return{sending:'⏳',delivered:'✓',sent:'✓',received:'✓✓',failed:'✗'}[s]||'·';}
-function escHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');}
+function esc(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');}
 function showToast(msg,type=''){
   const t=document.getElementById('toast');
   t.textContent=msg;t.className='show '+(type==='err'?'err':type==='ok'?'ok':'');
   setTimeout(()=>t.className='',3500);
 }
 
+// ─── INIT ───
+initNotifications();
+setDashDate();
 loadContacts();
+loadStats();
 startPoll();
+
+// Обновляем статистику каждые 30 сек
+setInterval(loadStats, 30000);
 </script>
 </body>
 </html>

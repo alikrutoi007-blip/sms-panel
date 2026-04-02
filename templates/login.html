@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMS Panel Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#07080d;
+  --s1:#0d0f18;
+  --s2:#131624;
+  --b:#1f2438;
+  --a:#4fffb0;
+  --t:#d8dff0;
+  --td:#5a6280;
+  --red:#ff4f6a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:24px;
+  background:
+    radial-gradient(circle at top, rgba(79,255,176,.12), transparent 30%),
+    linear-gradient(180deg, #0a0d14 0%, #07080d 100%);
+  color:var(--t);
+  font-family:'IBM Plex Sans',sans-serif;
+}
+.card{
+  width:min(100%, 420px);
+  padding:28px;
+  border:1px solid var(--b);
+  border-radius:18px;
+  background:rgba(13,15,24,.96);
+  box-shadow:0 18px 80px rgba(0,0,0,.35);
+}
+.eyebrow{
+  margin-bottom:10px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--a);
+}
+h1{
+  font-size:28px;
+  line-height:1.1;
+  margin-bottom:8px;
+}
+p{
+  color:var(--td);
+  line-height:1.5;
+  margin-bottom:20px;
+}
+label{
+  display:block;
+  margin-bottom:6px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--td);
+}
+input{
+  width:100%;
+  padding:12px 14px;
+  margin-bottom:14px;
+  border:1px solid var(--b);
+  border-radius:10px;
+  background:var(--s2);
+  color:var(--t);
+  font-size:15px;
+  outline:none;
+}
+input:focus{border-color:var(--a)}
+.error{
+  margin-bottom:14px;
+  padding:11px 12px;
+  border:1px solid rgba(255,79,106,.2);
+  border-radius:10px;
+  background:rgba(255,79,106,.08);
+  color:var(--red);
+  font-size:14px;
+}
+button{
+  width:100%;
+  padding:12px 16px;
+  border:none;
+  border-radius:10px;
+  background:var(--a);
+  color:#07080d;
+  cursor:pointer;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+button:hover{opacity:.92}
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="eyebrow">Protected Access</div>
+    <h1>SMS Panel</h1>
+    <p>Вход общий для сотрудников. Регистрация не нужна.</p>
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label for="username">Логин</label>
+      <input id="username" name="username" type="text" autocomplete="username" required>
+
+      <label for="password">Пароль</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+      <button type="submit">Войти</button>
+    </form>
+  </main>
+</body>
+</html>

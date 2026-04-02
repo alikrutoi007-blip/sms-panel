@@ -5,7 +5,7 @@ import psycopg2.extras
 import requests
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, render_template, g, redirect, session, url_for
 
 app = Flask(__name__)
@@ -75,6 +75,56 @@ def extract_telnyx_error(payload):
     return first.get("code", ""), first.get("detail") or first.get("title") or ""
 
 
+def extract_telnyx_timing(payload):
+    payload = payload or {}
+    return {
+        "provider_received_at": payload.get("received_at"),
+        "provider_sent_at": payload.get("sent_at"),
+        "provider_completed_at": payload.get("completed_at"),
+        "provider_valid_until": payload.get("valid_until"),
+        "provider_wait_seconds": payload.get("wait_seconds"),
+    }
+
+
+def parse_iso_utc(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def seconds_between(start_value, end_value):
+    start_dt = parse_iso_utc(start_value)
+    end_dt = parse_iso_utc(end_value)
+    if not start_dt or not end_dt:
+        return None
+    return round((end_dt - start_dt).total_seconds(), 3)
+
+
+def sql_utc_timestamptz(column_name):
+    return f"""
+        CASE
+            WHEN {column_name} IS NULL OR {column_name} = '' THEN NULL
+            WHEN {column_name} ~ '(Z|[+-][0-9]{{2}}:[0-9]{{2}})$' THEN {column_name}::timestamptz
+            ELSE ({column_name} || '+00:00')::timestamptz
+        END
+    """
+
+
+def coerce_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def send_telnyx_message(to_number, from_number, text):
     resp = requests.post(
         "https://api.telnyx.com/v2/messages",
@@ -103,6 +153,7 @@ def insert_message_record(conn, direction, contact, my_number, body, status, cre
                           error_code="", error_detail="", broadcast_id=None,
                           broadcast_recipient_id=None):
     cost_data = extract_telnyx_cost(cost_payload)
+    timing_data = extract_telnyx_timing(cost_payload)
     cur = conn.cursor()
     cur.execute(
         """
@@ -110,9 +161,11 @@ def insert_message_record(conn, direction, contact, my_number, body, status, cre
             direction, contact, my_number, body, status, created_at,
             provider_message_id, cost_amount, cost_currency, cost_carrier_fee,
             cost_rate, parts, finalized_at, error_code, error_detail,
-            broadcast_id, broadcast_recipient_id
+            broadcast_id, broadcast_recipient_id, provider_received_at,
+            provider_sent_at, provider_completed_at, provider_valid_until,
+            provider_wait_seconds
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             direction, contact, my_number, body, status, created_at,
@@ -127,6 +180,11 @@ def insert_message_record(conn, direction, contact, my_number, body, status, cre
             error_detail or None,
             broadcast_id,
             broadcast_recipient_id,
+            timing_data["provider_received_at"],
+            timing_data["provider_sent_at"],
+            timing_data["provider_completed_at"],
+            timing_data["provider_valid_until"],
+            timing_data["provider_wait_seconds"],
         )
     )
     cur.close()
@@ -224,6 +282,7 @@ def update_outbound_tracking(conn, payload, event_type):
     status = (payload.get("to") or [{}])[0].get("status", "sent")
     finalized_at = utcnow_iso() if event_type == "message.finalized" else None
     cost_data = extract_telnyx_cost(payload)
+    timing_data = extract_telnyx_timing(payload)
     error_code, error_detail = extract_telnyx_error(payload)
     updated_broadcasts = set()
 
@@ -242,6 +301,11 @@ def update_outbound_tracking(conn, payload, event_type):
                 cost_rate = COALESCE(%s, cost_rate),
                 parts = CASE WHEN %s > 0 THEN %s ELSE parts END,
                 finalized_at = CASE WHEN %s IS NOT NULL THEN %s ELSE finalized_at END,
+                provider_received_at = COALESCE(%s, provider_received_at),
+                provider_sent_at = COALESCE(%s, provider_sent_at),
+                provider_completed_at = COALESCE(%s, provider_completed_at),
+                provider_valid_until = COALESCE(%s, provider_valid_until),
+                provider_wait_seconds = COALESCE(%s, provider_wait_seconds),
                 error_code = COALESCE(NULLIF(%s, ''), error_code),
                 error_detail = COALESCE(NULLIF(%s, ''), error_detail)
             WHERE provider_message_id = %s
@@ -258,6 +322,11 @@ def update_outbound_tracking(conn, payload, event_type):
                 cost_data["parts"],
                 finalized_at,
                 finalized_at,
+                timing_data["provider_received_at"],
+                timing_data["provider_sent_at"],
+                timing_data["provider_completed_at"],
+                timing_data["provider_valid_until"],
+                timing_data["provider_wait_seconds"],
                 error_code,
                 error_detail,
                 provider_message_id,
@@ -280,6 +349,11 @@ def update_outbound_tracking(conn, payload, event_type):
                 cost_rate = COALESCE(%s, cost_rate),
                 parts = CASE WHEN %s > 0 THEN %s ELSE parts END,
                 finalized_at = CASE WHEN %s IS NOT NULL THEN %s ELSE finalized_at END,
+                provider_received_at = COALESCE(%s, provider_received_at),
+                provider_sent_at = COALESCE(%s, provider_sent_at),
+                provider_completed_at = COALESCE(%s, provider_completed_at),
+                provider_valid_until = COALESCE(%s, provider_valid_until),
+                provider_wait_seconds = COALESCE(%s, provider_wait_seconds),
                 error_code = COALESCE(NULLIF(%s, ''), error_code),
                 error_detail = COALESCE(NULLIF(%s, ''), error_detail)
             WHERE id = (
@@ -299,6 +373,11 @@ def update_outbound_tracking(conn, payload, event_type):
                 cost_data["parts"],
                 finalized_at,
                 finalized_at,
+                timing_data["provider_received_at"],
+                timing_data["provider_sent_at"],
+                timing_data["provider_completed_at"],
+                timing_data["provider_valid_until"],
+                timing_data["provider_wait_seconds"],
                 error_code,
                 error_detail,
                 to_num,
@@ -319,6 +398,11 @@ def update_outbound_tracking(conn, payload, event_type):
                 cost_rate = COALESCE(%s, cost_rate),
                 parts = CASE WHEN %s > 0 THEN %s ELSE parts END,
                 finalized_at = CASE WHEN %s IS NOT NULL THEN %s ELSE finalized_at END,
+                provider_received_at = COALESCE(%s, provider_received_at),
+                provider_sent_at = COALESCE(%s, provider_sent_at),
+                provider_completed_at = COALESCE(%s, provider_completed_at),
+                provider_valid_until = COALESCE(%s, provider_valid_until),
+                provider_wait_seconds = COALESCE(%s, provider_wait_seconds),
                 last_error_code = COALESCE(NULLIF(%s, ''), last_error_code),
                 last_error_detail = COALESCE(NULLIF(%s, ''), last_error_detail)
             WHERE provider_message_id = %s
@@ -334,6 +418,11 @@ def update_outbound_tracking(conn, payload, event_type):
                 cost_data["parts"],
                 finalized_at,
                 finalized_at,
+                timing_data["provider_received_at"],
+                timing_data["provider_sent_at"],
+                timing_data["provider_completed_at"],
+                timing_data["provider_valid_until"],
+                timing_data["provider_wait_seconds"],
                 error_code,
                 error_detail,
                 provider_message_id,
@@ -346,6 +435,135 @@ def update_outbound_tracking(conn, payload, event_type):
 
     for broadcast_id in updated_broadcasts:
         refresh_broadcast_stats(conn, broadcast_id)
+
+
+def get_broadcast_diagnostics(conn, broadcast_id, recent_limit=8):
+    queued_ts = sql_utc_timestamptz("queued_at")
+    sent_ts = sql_utc_timestamptz("sent_at")
+    provider_received_ts = sql_utc_timestamptz("provider_received_at")
+    provider_sent_ts = sql_utc_timestamptz("provider_sent_at")
+    provider_completed_ts = sql_utc_timestamptz("provider_completed_at")
+    finalized_ts = sql_utc_timestamptz("finalized_at")
+    provider_stage_end = f"COALESCE({provider_sent_ts}, {provider_completed_ts}, {finalized_ts})"
+    overall_end = f"COALESCE({provider_completed_ts}, {finalized_ts}, {provider_sent_ts}, {provider_received_ts}, {sent_ts})"
+
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f"""
+        SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE sent_at IS NOT NULL)::int AS app_sent_count,
+            COUNT(*) FILTER (WHERE provider_received_at IS NOT NULL)::int AS provider_received_count,
+            COUNT(*) FILTER (WHERE provider_sent_at IS NOT NULL)::int AS provider_sent_count,
+            COUNT(*) FILTER (WHERE provider_completed_at IS NOT NULL OR finalized_at IS NOT NULL)::int AS provider_completed_count,
+            AVG(EXTRACT(EPOCH FROM ({sent_ts} - {queued_ts}))) FILTER (
+                WHERE {sent_ts} IS NOT NULL AND {queued_ts} IS NOT NULL
+            ) AS avg_app_queue_seconds,
+            MAX(EXTRACT(EPOCH FROM ({sent_ts} - {queued_ts}))) FILTER (
+                WHERE {sent_ts} IS NOT NULL AND {queued_ts} IS NOT NULL
+            ) AS max_app_queue_seconds,
+            AVG(EXTRACT(EPOCH FROM ({provider_received_ts} - {sent_ts}))) FILTER (
+                WHERE {provider_received_ts} IS NOT NULL AND {sent_ts} IS NOT NULL
+            ) AS avg_provider_accept_seconds,
+            AVG(EXTRACT(EPOCH FROM ({provider_stage_end} - COALESCE({provider_received_ts}, {sent_ts})))) FILTER (
+                WHERE {provider_stage_end} IS NOT NULL
+                  AND COALESCE({provider_received_ts}, {sent_ts}) IS NOT NULL
+            ) AS avg_provider_queue_seconds,
+            MAX(EXTRACT(EPOCH FROM ({provider_stage_end} - COALESCE({provider_received_ts}, {sent_ts})))) FILTER (
+                WHERE {provider_stage_end} IS NOT NULL
+                  AND COALESCE({provider_received_ts}, {sent_ts}) IS NOT NULL
+            ) AS max_provider_queue_seconds,
+            AVG(provider_wait_seconds) FILTER (WHERE provider_wait_seconds IS NOT NULL) AS avg_provider_wait_seconds,
+            MAX(provider_wait_seconds) FILTER (WHERE provider_wait_seconds IS NOT NULL) AS max_provider_wait_seconds,
+            AVG(EXTRACT(EPOCH FROM ({overall_end} - {queued_ts}))) FILTER (
+                WHERE {overall_end} IS NOT NULL AND {queued_ts} IS NOT NULL
+            ) AS avg_end_to_end_seconds,
+            MAX(EXTRACT(EPOCH FROM ({overall_end} - {queued_ts}))) FILTER (
+                WHERE {overall_end} IS NOT NULL AND {queued_ts} IS NOT NULL
+            ) AS max_end_to_end_seconds
+        FROM broadcast_recipients
+        WHERE broadcast_id = %s
+        """,
+        (broadcast_id,)
+    )
+    summary = dict(cur.fetchone() or {})
+
+    cur.execute(
+        """
+        SELECT
+            id,
+            phone,
+            status,
+            attempts,
+            queued_at,
+            last_attempt_at,
+            sent_at,
+            finalized_at,
+            provider_received_at,
+            provider_sent_at,
+            provider_completed_at,
+            provider_valid_until,
+            provider_wait_seconds,
+            last_error_code,
+            last_error_detail
+        FROM broadcast_recipients
+        WHERE broadcast_id = %s
+        ORDER BY COALESCE(
+            provider_completed_at,
+            finalized_at,
+            provider_sent_at,
+            provider_received_at,
+            sent_at,
+            last_attempt_at,
+            queued_at
+        ) DESC, id DESC
+        LIMIT %s
+        """,
+        (broadcast_id, recent_limit)
+    )
+    recent_rows = [dict(row) for row in cur.fetchall()]
+    cur.close()
+
+    for key in (
+        "avg_app_queue_seconds",
+        "max_app_queue_seconds",
+        "avg_provider_accept_seconds",
+        "avg_provider_queue_seconds",
+        "max_provider_queue_seconds",
+        "avg_provider_wait_seconds",
+        "max_provider_wait_seconds",
+        "avg_end_to_end_seconds",
+        "max_end_to_end_seconds",
+    ):
+        summary[key] = coerce_float(summary.get(key))
+
+    for row in recent_rows:
+        row["provider_wait_seconds"] = coerce_float(row.get("provider_wait_seconds"))
+        row["app_queue_seconds"] = seconds_between(
+            row.get("queued_at"),
+            row.get("sent_at") or row.get("last_attempt_at")
+        )
+        row["provider_accept_seconds"] = seconds_between(
+            row.get("sent_at"),
+            row.get("provider_received_at")
+        )
+        row["provider_queue_seconds"] = seconds_between(
+            row.get("provider_received_at") or row.get("sent_at"),
+            row.get("provider_sent_at") or row.get("provider_completed_at") or row.get("finalized_at")
+        )
+        row["end_to_end_seconds"] = seconds_between(
+            row.get("queued_at"),
+            row.get("provider_completed_at")
+            or row.get("finalized_at")
+            or row.get("provider_sent_at")
+            or row.get("provider_received_at")
+            or row.get("sent_at")
+        )
+
+    return {
+        "summary": summary,
+        "recent_recipients": recent_rows,
+    }
 
 
 def recover_stuck_recipients(conn):
@@ -461,6 +679,7 @@ def process_next_broadcast(conn):
     sent_at = utcnow_iso()
     payload = data.get("data") or {}
     cost_data = extract_telnyx_cost(payload)
+    timing_data = extract_telnyx_timing(payload)
     provider_message_id = payload.get("id", "")
     provider_status = (payload.get("to") or [{}])[0].get("status", "sent")
     error_code, api_error_detail = extract_telnyx_error(data)
@@ -492,7 +711,12 @@ def process_next_broadcast(conn):
                 cost_currency = COALESCE(%s, cost_currency),
                 cost_carrier_fee = COALESCE(%s, cost_carrier_fee),
                 cost_rate = COALESCE(%s, cost_rate),
-                parts = CASE WHEN %s > 0 THEN %s ELSE parts END
+                parts = CASE WHEN %s > 0 THEN %s ELSE parts END,
+                provider_received_at = COALESCE(%s, provider_received_at),
+                provider_sent_at = COALESCE(%s, provider_sent_at),
+                provider_completed_at = COALESCE(%s, provider_completed_at),
+                provider_valid_until = COALESCE(%s, provider_valid_until),
+                provider_wait_seconds = COALESCE(%s, provider_wait_seconds)
             WHERE id = %s
             """,
             (
@@ -505,6 +729,11 @@ def process_next_broadcast(conn):
                 cost_data["cost_rate"],
                 cost_data["parts"],
                 cost_data["parts"],
+                timing_data["provider_received_at"],
+                timing_data["provider_sent_at"],
+                timing_data["provider_completed_at"],
+                timing_data["provider_valid_until"],
+                timing_data["provider_wait_seconds"],
                 row["id"],
             )
         )
@@ -702,6 +931,11 @@ def init_db():
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS error_detail TEXT")
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS broadcast_id INTEGER")
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS broadcast_recipient_id INTEGER")
+        cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_received_at TEXT")
+        cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_sent_at TEXT")
+        cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_completed_at TEXT")
+        cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_valid_until TEXT")
+        cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_wait_seconds NUMERIC(12, 3)")
 
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS from_number TEXT DEFAULT ''")
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS delivered INTEGER DEFAULT 0")
@@ -714,6 +948,11 @@ def init_db():
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS next_send_at TEXT")
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS started_at TEXT")
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS finished_at TEXT")
+        cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_received_at TEXT")
+        cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_sent_at TEXT")
+        cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_completed_at TEXT")
+        cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_valid_until TEXT")
+        cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_wait_seconds NUMERIC(12, 3)")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_body ON messages USING gin(to_tsvector('simple', body))")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact)")
@@ -1023,7 +1262,9 @@ def api_broadcast_status(bid):
     cur.close()
     if not row:
         return jsonify({"ok": False}), 404
-    return jsonify(dict(row))
+    result = dict(row)
+    result["diagnostics"] = get_broadcast_diagnostics(db, bid)
+    return jsonify(result)
 
 
 @app.route("/api/broadcasts")

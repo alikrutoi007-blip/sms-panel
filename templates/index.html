@@ -181,6 +181,20 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .psv.g{color:var(--a)}.psv.r{color:var(--red)}.psv.y{color:var(--yel)}
 .psv.b{color:var(--a2)}.psv.o{color:var(--ora)}
 .psl{color:var(--td)}
+.diag-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px}
+.diag-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+.diag-card{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px}
+.diag-val{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--t);font-weight:600}
+.diag-label{margin-top:4px;font-size:10px;color:var(--td);line-height:1.35}
+.diag-list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.diag-row{display:flex;justify-content:space-between;gap:10px;padding:10px 11px;border-radius:8px;border:1px solid var(--b);background:var(--s2)}
+.diag-main{flex:1;min-width:0}
+.diag-phone{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--t)}
+.diag-meta{font-size:10px;color:var(--td);line-height:1.45;margin-top:4px;word-break:break-word}
+.diag-side{min-width:128px;text-align:right}
+.diag-status{display:inline-block;padding:2px 6px;border-radius:5px;background:var(--s1);border:1px solid var(--b);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.05em;color:var(--td);text-transform:uppercase}
+.diag-time{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);margin-top:6px;line-height:1.4}
+.diag-empty{padding:12px;border:1px dashed var(--b);border-radius:8px;background:rgba(19,22,36,.4);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.04em;color:var(--tm);text-align:center}
 .hist-title{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--td);margin-bottom:8px}
 .hist-item{background:var(--s1);border:1px solid var(--b);border-radius:7px;padding:11px 13px;margin-bottom:5px;display:flex;align-items:center;gap:12px}
 .hi-info{flex:1;min-width:0}
@@ -449,6 +463,21 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
           <div class="psi"><span class="psv y" id="ps-r">0</span><span class="psl">Осталось</span></div>
           <div class="psi"><span class="psv b" id="ps-dr">—</span><span class="psl">Delivery Rate</span></div>
           <div class="psi"><span class="psv o" id="ps-cost">$0.00</span><span class="psl">Потрачено</span></div>
+        </div>
+        <div class="diag-head">
+          <div class="hist-title" style="margin-bottom:0">Диагностика</div>
+          <div class="fhint" id="diag-coverage">Ждем первые статусы от Telnyx</div>
+        </div>
+        <div class="diag-grid">
+          <div class="diag-card"><div class="diag-val" id="diag-local-avg">—</div><div class="diag-label">Наша очередь avg</div></div>
+          <div class="diag-card"><div class="diag-val" id="diag-local-max">—</div><div class="diag-label">Наша очередь max</div></div>
+          <div class="diag-card"><div class="diag-val" id="diag-provider-avg">—</div><div class="diag-label">Telnyx wait avg</div></div>
+          <div class="diag-card"><div class="diag-val" id="diag-provider-max">—</div><div class="diag-label">Telnyx wait max</div></div>
+          <div class="diag-card"><div class="diag-val" id="diag-total-avg">—</div><div class="diag-label">От очереди до финала avg</div></div>
+          <div class="diag-card"><div class="diag-val" id="diag-finalized">0 / 0</div><div class="diag-label">Финализировано</div></div>
+        </div>
+        <div class="diag-list" id="bc-diag-list">
+          <div class="diag-empty">Таймлайн появится после первых ответов от Telnyx.</div>
         </div>
       </div>
       <div>
@@ -992,6 +1021,7 @@ async function startBroadcast(){
   document.getElementById('bc-ptitle').textContent=`Запускаем на ${nums.length} номеров...`;
   document.getElementById('ps-dr').textContent='—';
   document.getElementById('ps-cost').textContent='$0.00';
+  resetBroadcastDiagnostics();
   try{
     const d=await (await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers:nums,text,from:MY_NUMBER})})).json();
     if(d.ok) pollBC(d.broadcast_id,d.total);
@@ -1012,6 +1042,7 @@ function pollBC(id,total){
       document.getElementById('ps-r').textContent=Math.max(0,actualTotal-processed);
       document.getElementById('ps-dr').textContent=fmtRate(d.delivery_rate);
       document.getElementById('ps-cost').textContent=fmtMoney(d.cost_amount,d.cost_currency);
+      renderBroadcastDiagnostics(d.diagnostics);
       const title=
         d.status==='queued' ? `В очереди... ${pct}%` :
         d.status==='done' ? `✅ Готово! ${d.sent}/${actualTotal}` :
@@ -1039,10 +1070,12 @@ async function loadBCHistory(){
   }catch(e){}
 }
 function clearBC(){
+  clearInterval(bcPollTimer);
   document.getElementById('bc-nums').value='';
   document.getElementById('bc-text').value='';
   document.getElementById('bc-name').value='';
   document.getElementById('bc-prog').style.display='none';
+  resetBroadcastDiagnostics();
   updateNS();updateCC();
 }
 
@@ -1069,8 +1102,8 @@ function startPoll(){
 
 // ─── HELPERS ───
 function fmtTime(iso){
-  if(!iso) return '';
-  const d=new Date(iso+(iso.includes('Z')?'':'Z'));
+  const d=parseIsoDate(iso);
+  if(!d) return '';
   const n=new Date();
   if(d.toDateString()===n.toDateString()) return d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
   return d.toLocaleDateString('ru',{day:'2-digit',month:'2-digit'});
@@ -1087,10 +1120,97 @@ function fmtMoney(amount,currency='USD'){
   if(!Number.isFinite(n)) return '—';
   return `${cur==='USD'?'$':cur+' '}${n.toFixed(4)}`;
 }
+function parseIsoDate(value){
+  if(!value) return null;
+  const raw=String(value);
+  const normalized=/(Z|[+-]\d{2}:\d{2})$/.test(raw)?raw:`${raw}Z`;
+  const d=new Date(normalized);
+  return Number.isNaN(d.getTime())?null:d;
+}
 function fmtRate(v){
   const n=Number(v);
   if(!Number.isFinite(n)) return '—';
   return `${n.toFixed(1)}%`;
+}
+function fmtSeconds(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)) return '—';
+  if(n>=3600) return `${(n/3600).toFixed(1)}h`;
+  if(n>=60) return `${(n/60).toFixed(n>=600?0:1)}m`;
+  return `${n.toFixed(n>=10?0:1)}s`;
+}
+function fmtClock(iso){
+  const d=parseIsoDate(iso);
+  if(!d) return '—';
+  return d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+function pickNumber(...values){
+  for(const value of values){
+    const n=Number(value);
+    if(Number.isFinite(n)) return n;
+  }
+  return null;
+}
+function resetBroadcastDiagnostics(){
+  document.getElementById('diag-coverage').textContent='Ждем первые статусы от Telnyx';
+  document.getElementById('diag-local-avg').textContent='—';
+  document.getElementById('diag-local-max').textContent='—';
+  document.getElementById('diag-provider-avg').textContent='—';
+  document.getElementById('diag-provider-max').textContent='—';
+  document.getElementById('diag-total-avg').textContent='—';
+  document.getElementById('diag-finalized').textContent='0 / 0';
+  document.getElementById('bc-diag-list').innerHTML='<div class="diag-empty">Таймлайн появится после первых ответов от Telnyx.</div>';
+}
+function renderBroadcastDiagnostics(diag){
+  const summary=diag?.summary||{};
+  const total=Number(summary.total)||0;
+  const telnyxAvg=pickNumber(summary.avg_provider_wait_seconds,summary.avg_provider_queue_seconds);
+  const telnyxMax=pickNumber(summary.max_provider_wait_seconds,summary.max_provider_queue_seconds);
+  document.getElementById('diag-coverage').textContent=
+    `Telnyx ${Number(summary.provider_received_count)||0}/${total} · carrier ${Number(summary.provider_sent_count)||0}/${total} · final ${Number(summary.provider_completed_count)||0}/${total}`;
+  document.getElementById('diag-local-avg').textContent=fmtSeconds(summary.avg_app_queue_seconds);
+  document.getElementById('diag-local-max').textContent=fmtSeconds(summary.max_app_queue_seconds);
+  document.getElementById('diag-provider-avg').textContent=fmtSeconds(telnyxAvg);
+  document.getElementById('diag-provider-max').textContent=fmtSeconds(telnyxMax);
+  document.getElementById('diag-total-avg').textContent=fmtSeconds(summary.avg_end_to_end_seconds);
+  document.getElementById('diag-finalized').textContent=`${Number(summary.provider_completed_count)||0} / ${total}`;
+
+  const list=diag?.recent_recipients||[];
+  const el=document.getElementById('bc-diag-list');
+  if(!list.length){
+    el.innerHTML='<div class="diag-empty">Ждем первые события по номерам.</div>';
+    return;
+  }
+
+  el.innerHTML=list.map(r=>{
+    const providerWait=pickNumber(r.provider_wait_seconds,r.provider_queue_seconds);
+    const timeline=[
+      r.queued_at?`queue ${fmtClock(r.queued_at)}`:'',
+      (r.sent_at||r.last_attempt_at)?`app ${fmtClock(r.sent_at||r.last_attempt_at)}`:'',
+      r.provider_received_at?`telnyx ${fmtClock(r.provider_received_at)}`:'',
+      r.provider_sent_at?`carrier ${fmtClock(r.provider_sent_at)}`:'',
+      (r.provider_completed_at||r.finalized_at)?`final ${fmtClock(r.provider_completed_at||r.finalized_at)}`:''
+    ].filter(Boolean).join(' · ');
+    const durations=[
+      Number.isFinite(Number(r.app_queue_seconds))?`app ${fmtSeconds(r.app_queue_seconds)}`:'',
+      Number.isFinite(Number(r.provider_accept_seconds))?`accept ${fmtSeconds(r.provider_accept_seconds)}`:'',
+      providerWait!==null?`wait ${fmtSeconds(providerWait)}`:'',
+      Number.isFinite(Number(r.end_to_end_seconds))?`total ${fmtSeconds(r.end_to_end_seconds)}`:''
+    ].filter(Boolean).join(' · ');
+    const error=r.last_error_detail?`<div class="diag-meta">${esc(r.last_error_detail)}</div>`:'';
+    return `<div class="diag-row">
+      <div class="diag-main">
+        <div class="diag-phone">${esc(r.phone)}</div>
+        <div class="diag-meta">${timeline||'Пока нет полного таймлайна'}</div>
+        <div class="diag-meta">${durations||'Замеры появятся после статусов провайдера'}</div>
+        ${error}
+      </div>
+      <div class="diag-side">
+        <div class="diag-status">${esc(r.status||'pending')}</div>
+        <div class="diag-time">try ${Number(r.attempts)||0}</div>
+      </div>
+    </div>`;
+  }).join('');
 }
 function stIcon(s){return{sending:'⏳',delivered:'✓✓',sent:'✓',received:'✓✓',failed:'✗',delivery_failed:'✗',delivery_unconfirmed:'?',sending_failed:'✗'}[s]||'·';}
 function esc(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');}
@@ -1103,6 +1223,7 @@ function showToast(msg,type=''){
 // ─── INIT ───
 initNotifications();
 setDashDate();
+resetBroadcastDiagnostics();
 loadContacts();
 loadStats();
 startPoll();

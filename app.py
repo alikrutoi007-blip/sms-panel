@@ -1,4 +1,5 @@
 import hmac
+import json
 import os
 import psycopg2
 import psycopg2.extras
@@ -7,6 +8,8 @@ import time
 import threading
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, render_template, g, redirect, session, url_for
+
+from number_lookup import classify_lookup_result, lookup_phone_number, normalize_phone_number
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SESSION_SECRET") or os.environ.get("FLASK_SECRET_KEY") or "change-me-in-production"
@@ -24,11 +27,28 @@ BROADCAST_MIN_INTERVAL_SECONDS = 60.0 / BROADCAST_RATE_LIMIT_PER_MINUTE
 MAX_BROADCAST_RETRIES = max(1, int(os.environ.get("MAX_BROADCAST_RETRIES", "3")))
 BROADCAST_STALE_MINUTES = max(5, int(os.environ.get("BROADCAST_STALE_MINUTES", "10")))
 BROADCAST_WORKER_LOCK_ID = 2026040201
+DEFAULT_COUNTRY_CODE = os.environ.get("DEFAULT_COUNTRY_CODE", "1")
 
 # Railway даёт "postgres://..." — psycopg2 требует "postgresql://..."
 DATABASE_URL = _DATABASE_URL.replace("postgres://", "postgresql://", 1) if _DATABASE_URL.startswith("postgres://") else _DATABASE_URL
 _broadcast_worker = None
 _broadcast_worker_guard = threading.Lock()
+
+
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
+NUMBER_LOOKUP_ENABLED = env_flag(
+    "NUMBER_LOOKUP_ENABLED",
+    bool(TELNYX_API_KEY and TELNYX_API_KEY != "YOUR_API_KEY"),
+)
+NUMBER_LOOKUP_TIMEOUT_SECONDS = max(5, int(os.environ.get("NUMBER_LOOKUP_TIMEOUT_SECONDS", "15")))
+NUMBER_LOOKUP_CACHE_DAYS = max(1, int(os.environ.get("NUMBER_LOOKUP_CACHE_DAYS", "30")))
+NUMBER_LOOKUP_FAIL_CLOSED = env_flag("NUMBER_LOOKUP_FAIL_CLOSED", True)
 
 
 def _safe_next_url(value):
@@ -43,6 +63,10 @@ def utcnow_iso():
 
 def iso_after(seconds):
     return (datetime.utcnow() + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+def iso_days_after(days):
+    return (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 
 def parse_telnyx_json(resp):
@@ -123,6 +147,285 @@ def coerce_float(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def lookup_reason_display(decision, line_type="", error_text=""):
+    if decision == "accepted":
+        return f"SMS-capable ({line_type or 'mobile'})"
+    if decision == "invalid_format":
+        return "Invalid phone format"
+    if decision == "rejected":
+        return f"Not SMS-capable ({line_type or 'unknown'})"
+    if decision == "lookup_error":
+        return error_text or "Number lookup failed"
+    if decision == "format_only":
+        return "Format looks valid, lookup disabled"
+    return "Lookup result is inconclusive"
+
+
+def sanitize_lookup_result(result):
+    return {
+        "input_phone": result.get("input_phone", ""),
+        "normalized_phone": result.get("normalized_phone", ""),
+        "accepted": bool(result.get("accepted")),
+        "decision": result.get("decision", ""),
+        "reason": result.get("reason", ""),
+        "reason_display": result.get("reason_display", ""),
+        "line_type": result.get("line_type", ""),
+        "carrier_name": result.get("carrier_name", ""),
+        "country_code": result.get("country_code", ""),
+        "cache_hit": bool(result.get("cache_hit")),
+        "lookup_performed": bool(result.get("lookup_performed")),
+        "source": result.get("source", ""),
+        "checked_at": result.get("checked_at"),
+        "expires_at": result.get("expires_at"),
+        "error_text": result.get("error_text", ""),
+    }
+
+
+def load_cached_lookup(conn, normalized_phone):
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT *
+        FROM number_lookup_cache
+        WHERE normalized_phone = %s
+          AND expires_at >= %s
+        """,
+        (normalized_phone, utcnow_iso())
+    )
+    row = cur.fetchone()
+    cur.close()
+    if not row:
+        return None
+    return dict(row)
+
+
+def save_cached_lookup(conn, result, expires_days):
+    checked_at = utcnow_iso()
+    expires_at = iso_days_after(expires_days)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO number_lookup_cache (
+            normalized_phone, accepted, decision, reason, reason_display,
+            line_type, carrier_name, country_code, source, error_text,
+            raw_payload, checked_at, expires_at
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (normalized_phone) DO UPDATE SET
+            accepted = EXCLUDED.accepted,
+            decision = EXCLUDED.decision,
+            reason = EXCLUDED.reason,
+            reason_display = EXCLUDED.reason_display,
+            line_type = EXCLUDED.line_type,
+            carrier_name = EXCLUDED.carrier_name,
+            country_code = EXCLUDED.country_code,
+            source = EXCLUDED.source,
+            error_text = EXCLUDED.error_text,
+            raw_payload = EXCLUDED.raw_payload,
+            checked_at = EXCLUDED.checked_at,
+            expires_at = EXCLUDED.expires_at
+        """,
+        (
+            result.get("normalized_phone", ""),
+            bool(result.get("accepted")),
+            result.get("decision", ""),
+            result.get("reason", ""),
+            result.get("reason_display", ""),
+            result.get("line_type", ""),
+            result.get("carrier_name", ""),
+            result.get("country_code", ""),
+            result.get("source", ""),
+            result.get("error_text", ""),
+            json.dumps(result.get("raw_payload") or {}, ensure_ascii=True),
+            checked_at,
+            expires_at,
+        )
+    )
+    cur.close()
+    result["checked_at"] = checked_at
+    result["expires_at"] = expires_at
+
+
+def assess_phone_for_sms(conn, raw_number):
+    input_phone = str(raw_number or "").strip()
+    normalized_phone = normalize_phone_number(input_phone, DEFAULT_COUNTRY_CODE)
+    if not normalized_phone:
+        return {
+            "input_phone": input_phone,
+            "normalized_phone": "",
+            "accepted": False,
+            "decision": "invalid_format",
+            "reason": "invalid_format",
+            "reason_display": lookup_reason_display("invalid_format"),
+            "line_type": "",
+            "carrier_name": "",
+            "country_code": "",
+            "cache_hit": False,
+            "lookup_performed": False,
+            "source": "format",
+            "error_text": "",
+            "raw_payload": {},
+            "checked_at": utcnow_iso(),
+            "expires_at": iso_days_after(NUMBER_LOOKUP_CACHE_DAYS),
+        }
+
+    cached = load_cached_lookup(conn, normalized_phone)
+    if cached:
+        return {
+            "input_phone": input_phone,
+            "normalized_phone": normalized_phone,
+            "accepted": bool(cached.get("accepted")),
+            "decision": cached.get("decision", ""),
+            "reason": cached.get("reason", ""),
+            "reason_display": cached.get("reason_display", ""),
+            "line_type": cached.get("line_type", ""),
+            "carrier_name": cached.get("carrier_name", ""),
+            "country_code": cached.get("country_code", ""),
+            "cache_hit": True,
+            "lookup_performed": False,
+            "source": cached.get("source", "cache"),
+            "error_text": cached.get("error_text", ""),
+            "raw_payload": {},
+            "checked_at": cached.get("checked_at"),
+            "expires_at": cached.get("expires_at"),
+        }
+
+    if not NUMBER_LOOKUP_ENABLED:
+        return {
+            "input_phone": input_phone,
+            "normalized_phone": normalized_phone,
+            "accepted": True,
+            "decision": "format_only",
+            "reason": "lookup_disabled",
+            "reason_display": lookup_reason_display("format_only"),
+            "line_type": "",
+            "carrier_name": "",
+            "country_code": "",
+            "cache_hit": False,
+            "lookup_performed": False,
+            "source": "format",
+            "error_text": "",
+            "raw_payload": {},
+            "checked_at": utcnow_iso(),
+            "expires_at": iso_days_after(NUMBER_LOOKUP_CACHE_DAYS),
+        }
+
+    if not TELNYX_API_KEY or TELNYX_API_KEY == "YOUR_API_KEY":
+        accepted = not NUMBER_LOOKUP_FAIL_CLOSED
+        result = {
+            "input_phone": input_phone,
+            "normalized_phone": normalized_phone,
+            "accepted": accepted,
+            "decision": "lookup_error",
+            "reason": "missing_telnyx_api_key",
+            "reason_display": lookup_reason_display("lookup_error", error_text="Number lookup API key is missing"),
+            "line_type": "",
+            "carrier_name": "",
+            "country_code": "",
+            "cache_hit": False,
+            "lookup_performed": False,
+            "source": "lookup",
+            "error_text": "Number lookup API key is missing",
+            "raw_payload": {},
+        }
+        save_cached_lookup(conn, result, 1)
+        return result
+
+    try:
+        ok, status_code, data, error_text = lookup_phone_number(
+            TELNYX_API_KEY,
+            normalized_phone,
+            timeout=NUMBER_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        ok, status_code, data, error_text = False, None, {}, str(exc)
+
+    if ok:
+        classified = classify_lookup_result(input_phone, normalized_phone, data)
+        decision = classified["decision"]
+        accepted = decision == "accepted"
+        if decision == "unknown":
+            accepted = not NUMBER_LOOKUP_FAIL_CLOSED
+            decision = "accepted" if accepted else "lookup_error"
+
+        result = {
+            "input_phone": input_phone,
+            "normalized_phone": classified.get("normalized_phone") or normalized_phone,
+            "accepted": accepted,
+            "decision": decision,
+            "reason": classified.get("reason", ""),
+            "reason_display": lookup_reason_display(
+                "accepted" if accepted and classified.get("decision") == "accepted" else decision,
+                line_type=classified.get("line_type", ""),
+                error_text="Lookup result is inconclusive",
+            ),
+            "line_type": classified.get("line_type", ""),
+            "carrier_name": classified.get("carrier_name", ""),
+            "country_code": classified.get("country_code", ""),
+            "cache_hit": False,
+            "lookup_performed": True,
+            "source": "telnyx",
+            "error_text": "" if classified.get("decision") != "unknown" else "Lookup result is inconclusive",
+            "raw_payload": data,
+        }
+        save_cached_lookup(conn, result, NUMBER_LOOKUP_CACHE_DAYS)
+        return result
+
+    accepted = not NUMBER_LOOKUP_FAIL_CLOSED
+    result = {
+        "input_phone": input_phone,
+        "normalized_phone": normalized_phone,
+        "accepted": accepted,
+        "decision": "lookup_error",
+        "reason": f"lookup_http_{status_code or 'error'}",
+        "reason_display": lookup_reason_display("lookup_error", error_text=error_text),
+        "line_type": "",
+        "carrier_name": "",
+        "country_code": "",
+        "cache_hit": False,
+        "lookup_performed": False,
+        "source": "telnyx",
+        "error_text": error_text,
+        "raw_payload": data,
+    }
+    save_cached_lookup(conn, result, 1)
+    return result
+
+
+def evaluate_numbers_for_sms(conn, numbers_raw):
+    results = []
+    seen = set()
+    duplicates_removed = 0
+
+    for raw_number in numbers_raw or []:
+        text = str(raw_number or "").strip()
+        if not text:
+            continue
+        normalized = normalize_phone_number(text, DEFAULT_COUNTRY_CODE)
+        dedupe_key = normalized or text
+        if dedupe_key in seen:
+            duplicates_removed += 1
+            continue
+        seen.add(dedupe_key)
+        results.append(assess_phone_for_sms(conn, text))
+
+    accepted = [sanitize_lookup_result(r) for r in results if r.get("accepted")]
+    rejected = [sanitize_lookup_result(r) for r in results if not r.get("accepted")]
+
+    return {
+        "total_submitted": len([n for n in numbers_raw or [] if str(n or "").strip()]),
+        "processed": len(results),
+        "duplicates_removed": duplicates_removed,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "cache_hits": sum(1 for r in results if r.get("cache_hit")),
+        "lookup_hits": sum(1 for r in results if r.get("lookup_performed")),
+        "accepted_numbers": [r["normalized_phone"] for r in accepted if r.get("normalized_phone")],
+        "accepted": accepted,
+        "rejected": rejected,
+    }
 
 
 def send_telnyx_message(to_number, from_number, text):
@@ -906,6 +1209,24 @@ def init_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS number_lookup_cache (
+                normalized_phone TEXT PRIMARY KEY,
+                accepted         BOOLEAN NOT NULL,
+                decision         TEXT NOT NULL,
+                reason           TEXT NOT NULL,
+                reason_display   TEXT NOT NULL,
+                line_type        TEXT DEFAULT '',
+                carrier_name     TEXT DEFAULT '',
+                country_code     TEXT DEFAULT '',
+                source           TEXT DEFAULT '',
+                error_text       TEXT DEFAULT '',
+                raw_payload      TEXT DEFAULT '{}',
+                checked_at       TEXT NOT NULL,
+                expires_at       TEXT NOT NULL
+            )
+        """)
+
         # Таблица контактов (имя, компания, теги, заметки)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
@@ -953,6 +1274,15 @@ def init_db():
         cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_completed_at TEXT")
         cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_valid_until TEXT")
         cur.execute("ALTER TABLE broadcast_recipients ADD COLUMN IF NOT EXISTS provider_wait_seconds NUMERIC(12, 3)")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS line_type TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS carrier_name TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS country_code TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS error_text TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS raw_payload TEXT DEFAULT '{}'")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS reason_display TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS checked_at TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS expires_at TEXT DEFAULT ''")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_body ON messages USING gin(to_tsvector('simple', body))")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact)")
@@ -962,6 +1292,7 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status ON broadcast_recipients(status)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_provider_id ON broadcast_recipients(provider_message_id)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_phone_per_broadcast ON broadcast_recipients(broadcast_id, phone)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_number_lookup_cache_expires_at ON number_lookup_cache(expires_at)")
         cur.execute(
             """
             INSERT INTO app_state (key, value)
@@ -1166,29 +1497,56 @@ def api_stats():
 
 
 # ═══════════════════════════════════════════════════════
+#  API — Number lookup
+# ═══════════════════════════════════════════════════════
+
+@app.route("/api/number-lookup", methods=["POST"])
+def api_number_lookup():
+    body = request.get_json(silent=True) or {}
+    numbers_raw = body.get("numbers", [])
+    db = get_db()
+    lookup = evaluate_numbers_for_sms(db, numbers_raw)
+    db.commit()
+    return jsonify({"ok": True, "lookup": lookup})
+
+
+# ═══════════════════════════════════════════════════════
 #  API — Send single message
 # ═══════════════════════════════════════════════════════
 
 @app.route("/api/send", methods=["POST"])
 def api_send():
-    body = request.get_json()
+    body = request.get_json(silent=True) or {}
     to = body.get("to")
-    text = body.get("text")
+    text = (body.get("text") or "").strip()
     from_num = body.get("from", MY_NUMBER)
+    if not text:
+        return jsonify({"ok": False, "error": "Message text is required"}), 400
+
+    db = get_db()
+    lookup = assess_phone_for_sms(db, to)
+    db.commit()
+    if not lookup.get("accepted"):
+        return jsonify({
+            "ok": False,
+            "error": lookup.get("reason_display", "Number rejected by lookup"),
+            "lookup": sanitize_lookup_result(lookup),
+        }), 400
+
+    to_number = lookup.get("normalized_phone") or str(to or "").strip()
 
     try:
-        ok, status_code, data, error_text = send_telnyx_message(to, from_num, text)
+        ok, status_code, data, error_text = send_telnyx_message(to_number, from_num, text)
     except requests.RequestException as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
     if ok:
         payload = data.get("data") or {}
         provider_status = (payload.get("to") or [{}])[0].get("status", "sending")
-        db = get_db()
         insert_message_record(
             db,
             "outbound",
-            to,
+            to_number,
             from_num,
             text,
             provider_status,
@@ -1197,7 +1555,7 @@ def api_send():
             cost_payload=payload,
         )
         db.commit()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "lookup": sanitize_lookup_result(lookup)})
     return jsonify({"ok": False, "error": error_text or str(data)}), 400
 
 
@@ -1208,22 +1566,24 @@ def api_send():
 
 @app.route("/api/broadcast", methods=["POST"])
 def api_broadcast():
-    body = request.get_json()
+    body = request.get_json(silent=True) or {}
     numbers_raw = body.get("numbers", [])
     text = body.get("text", "").strip()
     name = body.get("name", "Рассылка").strip()
     from_num = body.get("from", MY_NUMBER)
 
-    # Дедупликация + валидация формата
-    numbers = list({
-        n.strip() for n in numbers_raw
-        if n.strip() and n.strip().startswith("+")
-    })
-
-    if not numbers or not text:
-        return jsonify({"ok": False, "error": "Нет номеров или текста"}), 400
-
     db = get_db()
+    lookup = evaluate_numbers_for_sms(db, numbers_raw)
+    numbers = lookup["accepted_numbers"]
+
+    if not text:
+        db.commit()
+        return jsonify({"ok": False, "error": "Message text is required", "lookup": lookup}), 400
+
+    if not numbers:
+        db.commit()
+        return jsonify({"ok": False, "error": "No SMS-capable numbers after lookup", "lookup": lookup}), 400
+
     now_iso = utcnow_iso()
     cur = db.cursor()
     cur.execute(
@@ -1248,7 +1608,12 @@ def api_broadcast():
     db.commit()
     cur.close()
 
-    return jsonify({"ok": True, "broadcast_id": broadcast_id, "total": len(numbers)})
+    return jsonify({
+        "ok": True,
+        "broadcast_id": broadcast_id,
+        "total": len(numbers),
+        "lookup": lookup,
+    })
 
 
 @app.route("/api/broadcast/<int:bid>")

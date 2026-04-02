@@ -195,6 +195,21 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .diag-status{display:inline-block;padding:2px 6px;border-radius:5px;background:var(--s1);border:1px solid var(--b);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.05em;color:var(--td);text-transform:uppercase}
 .diag-time{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);margin-top:6px;line-height:1.4}
 .diag-empty{padding:12px;border:1px dashed var(--b);border-radius:8px;background:rgba(19,22,36,.4);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.04em;color:var(--tm);text-align:center}
+.lookup-box{display:none;background:var(--s1);border:1px solid var(--b);border-radius:8px;padding:14px 16px}
+.lookup-box.visible{display:block}
+.lookup-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+.lookup-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.lookup-card{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px}
+.lookup-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:var(--t)}
+.lookup-label{margin-top:4px;font-size:10px;color:var(--td);line-height:1.35}
+.lookup-cols{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.lookup-col{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px}
+.lookup-sub{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--td);margin-bottom:8px}
+.lookup-list{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+.lookup-item{padding:8px 9px;border:1px solid var(--b);border-radius:7px;background:rgba(7,8,13,.25)}
+.lookup-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--t)}
+.lookup-meta{font-size:10px;color:var(--td);margin-top:4px;line-height:1.4;word-break:break-word}
+.lookup-empty{padding:10px;border:1px dashed var(--b);border-radius:7px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tm);text-align:center}
 .hist-title{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--td);margin-bottom:8px}
 .hist-item{background:var(--s1);border:1px solid var(--b);border-radius:7px;padding:11px 13px;margin-bottom:5px;display:flex;align-items:center;gap:12px}
 .hi-info{flex:1;min-width:0}
@@ -452,7 +467,30 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
       </div>
       <div class="bc-acts">
         <button class="btn-bc" id="bc-btn" onclick="startBroadcast()">▶ Запустить</button>
+        <button class="btn-clr" id="bc-lookup-btn" onclick="runNumberLookup()">Проверить номера</button>
         <button class="btn-clr" onclick="clearBC()">Очистить</button>
+      </div>
+      <div class="lookup-box" id="lookup-box">
+        <div class="lookup-head">
+          <div class="hist-title" style="margin-bottom:0">Number Lookup</div>
+          <button class="btn-clr" id="lookup-apply-btn" onclick="applyAcceptedNumbers()" disabled>Оставить хорошие</button>
+        </div>
+        <div class="lookup-grid">
+          <div class="lookup-card"><div class="lookup-val" id="lookup-accepted">0</div><div class="lookup-label">Пройдут в SMS</div></div>
+          <div class="lookup-card"><div class="lookup-val" id="lookup-rejected">0</div><div class="lookup-label">Отсеяны</div></div>
+          <div class="lookup-card"><div class="lookup-val" id="lookup-cache">0</div><div class="lookup-label">Cache hits</div></div>
+          <div class="lookup-card"><div class="lookup-val" id="lookup-live">0</div><div class="lookup-label">Live lookups</div></div>
+        </div>
+        <div class="lookup-cols">
+          <div class="lookup-col">
+            <div class="lookup-sub">Хорошие номера</div>
+            <div class="lookup-list" id="lookup-good"></div>
+          </div>
+          <div class="lookup-col">
+            <div class="lookup-sub">Плохие номера</div>
+            <div class="lookup-list" id="lookup-bad"></div>
+          </div>
+        </div>
       </div>
       <div class="bc-prog" id="bc-prog" style="display:none">
         <div class="bc-prog-title" id="bc-ptitle">Рассылка...</div>
@@ -637,6 +675,7 @@ let pollTimer = null;
 let bcPollTimer = null;
 let saveTimer = null;
 let currentTags = [];
+let lastLookupSummary = null;
 let lastMsgIds = {};   // contact → max id seen
 let notifGranted = false;
 
@@ -980,10 +1019,23 @@ function doSearch(q){
 }
 
 // ─── BROADCAST ───
+function normalizeLocalNumber(raw){
+  const text=String(raw||'').trim();
+  if(!text) return '';
+  if(text.startsWith('+')){
+    const digits='+'+text.replace(/[^\d]/g,'');
+    return digits.length>=9&&digits.length<=16?digits:'';
+  }
+  const digits=text.replace(/\D/g,'');
+  if(digits.length===10) return `+1${digits}`;
+  if(digits.length>=8&&digits.length<=15) return `+${digits}`;
+  return '';
+}
 function updateNS(){
   const lines=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
-  const valid=lines.filter(l=>l.startsWith('+'));
+  const valid=lines.map(normalizeLocalNumber).filter(Boolean);
   const uniq=[...new Set(valid)];
+  if(lastLookupSummary) resetLookupSummary();
   document.getElementById('ns-t').textContent=lines.length;
   document.getElementById('ns-v').textContent=uniq.length;
   document.getElementById('ns-d').textContent=valid.length-uniq.length;
@@ -1010,9 +1062,76 @@ dz.addEventListener('drop',e=>{
   const dt=new DataTransfer();dt.items.add(f);inp.files=dt.files;handleFile(inp);
 });
 
+function resetLookupSummary(){
+  lastLookupSummary=null;
+  document.getElementById('lookup-box').classList.remove('visible');
+  document.getElementById('lookup-accepted').textContent='0';
+  document.getElementById('lookup-rejected').textContent='0';
+  document.getElementById('lookup-cache').textContent='0';
+  document.getElementById('lookup-live').textContent='0';
+  document.getElementById('lookup-good').innerHTML='<div class="lookup-empty">Проверка еще не запускалась.</div>';
+  document.getElementById('lookup-bad').innerHTML='<div class="lookup-empty">Плохие номера появятся здесь.</div>';
+  document.getElementById('lookup-apply-btn').disabled=true;
+}
+
+function renderLookupColumn(items, emptyText){
+  if(!items.length) return `<div class="lookup-empty">${emptyText}</div>`;
+  return items.map(item=>`<div class="lookup-item">
+    <div class="lookup-num">${esc(item.normalized_phone||item.input_phone||'')}</div>
+    <div class="lookup-meta">${esc(item.reason_display||item.reason||'')}</div>
+    <div class="lookup-meta">${esc(item.carrier_name||'')} ${item.line_type?`· ${esc(item.line_type)}`:''}</div>
+  </div>`).join('');
+}
+
+function renderLookupSummary(lookup){
+  lastLookupSummary=lookup||null;
+  const box=document.getElementById('lookup-box');
+  if(!lookup){
+    resetLookupSummary();
+    return;
+  }
+  box.classList.add('visible');
+  document.getElementById('lookup-accepted').textContent=lookup.accepted_count||0;
+  document.getElementById('lookup-rejected').textContent=lookup.rejected_count||0;
+  document.getElementById('lookup-cache').textContent=lookup.cache_hits||0;
+  document.getElementById('lookup-live').textContent=lookup.lookup_hits||0;
+  document.getElementById('lookup-good').innerHTML=renderLookupColumn(lookup.accepted||[],'SMS-capable номера не найдены.');
+  document.getElementById('lookup-bad').innerHTML=renderLookupColumn(lookup.rejected||[],'Все номера выглядят пригодными.');
+  document.getElementById('lookup-apply-btn').disabled=!(lookup.accepted_numbers||[]).length;
+}
+
+async function runNumberLookup(){
+  const nums=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  if(!nums.length){showToast('Добавь номера','err');return;}
+  const btn=document.getElementById('bc-lookup-btn');
+  btn.disabled=true;
+  try{
+    const d=await (await fetch('/api/number-lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({numbers:nums})})).json();
+    if(d.ok){
+      renderLookupSummary(d.lookup);
+      const accepted=Number(d.lookup?.accepted_count)||0;
+      const rejected=Number(d.lookup?.rejected_count)||0;
+      showToast(`Lookup: ${accepted} good, ${rejected} rejected`,rejected?'err':'ok');
+    }else{
+      showToast('Ошибка проверки номеров','err');
+    }
+  }catch(e){
+    showToast('Сетевая ошибка','err');
+  }
+  btn.disabled=false;
+}
+
+function applyAcceptedNumbers(){
+  const accepted=lastLookupSummary?.accepted_numbers||[];
+  if(!accepted.length) return;
+  document.getElementById('bc-nums').value=accepted.join('\n');
+  updateNS();
+  showToast(`Оставлено ${accepted.length} good numbers`,'ok');
+}
+
 async function startBroadcast(){
   const name=document.getElementById('bc-name').value.trim()||'Рассылка';
-  const nums=[...new Set(document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('+')))];
+  const nums=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
   const text=document.getElementById('bc-text').value.trim();
   if(!nums.length){showToast('Добавь номера','err');return;}
   if(!text){showToast('Напиши текст','err');return;}
@@ -1024,7 +1143,11 @@ async function startBroadcast(){
   resetBroadcastDiagnostics();
   try{
     const d=await (await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers:nums,text,from:MY_NUMBER})})).json();
-    if(d.ok) pollBC(d.broadcast_id,d.total);
+    renderLookupSummary(d.lookup||null);
+    if(d.ok){
+      if((Number(d.lookup?.rejected_count)||0)>0) showToast(`Отсеяно ${d.lookup.rejected_count} bad numbers before send`,'err');
+      pollBC(d.broadcast_id,d.total);
+    }
     else{showToast('Ошибка: '+d.error,'err');document.getElementById('bc-btn').disabled=false;}
   }catch(e){showToast('Сетевая ошибка','err');document.getElementById('bc-btn').disabled=false;}
 }
@@ -1075,6 +1198,7 @@ function clearBC(){
   document.getElementById('bc-text').value='';
   document.getElementById('bc-name').value='';
   document.getElementById('bc-prog').style.display='none';
+  resetLookupSummary();
   resetBroadcastDiagnostics();
   updateNS();updateCC();
 }
@@ -1223,6 +1347,7 @@ function showToast(msg,type=''){
 // ─── INIT ───
 initNotifications();
 setDashDate();
+resetLookupSummary();
 resetBroadcastDiagnostics();
 loadContacts();
 loadStats();

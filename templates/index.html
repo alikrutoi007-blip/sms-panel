@@ -497,7 +497,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
         <div class="pbwrap"><div class="pb" id="bc-bar" style="width:0%"></div></div>
         <div class="pstats">
           <div class="psi"><span class="psv g" id="ps-s">0</span><span class="psl">Отправлено</span></div>
-          <div class="psi"><span class="psv r" id="ps-f">0</span><span class="psl">Ошибок</span></div>
+          <div class="psi"><span class="psv r" id="ps-f">0</span><span class="psl">Не отправлено</span></div>
           <div class="psi"><span class="psv y" id="ps-r">0</span><span class="psl">Осталось</span></div>
           <div class="psi"><span class="psv b" id="ps-dr">—</span><span class="psl">Delivery Rate</span></div>
           <div class="psi"><span class="psv o" id="ps-cost">$0.00</span><span class="psl">Потрачено</span></div>
@@ -1157,21 +1157,28 @@ function pollBC(id,total){
     try{
       const d=await (await fetch(`/api/broadcast/${id}`)).json();
       const actualTotal=Number(d.total)||total;
-      const processed=(Number(d.sent)||0)+(Number(d.failed)||0);
+      const sent=Number(d.sent)||0;
+      const notSent=Number(d.not_sent)||0;
+      const processed=sent+notSent;
       const pct=actualTotal>0?Math.round(processed/actualTotal*100):0;
       document.getElementById('bc-bar').style.width=pct+'%';
-      document.getElementById('ps-s').textContent=d.sent;
-      document.getElementById('ps-f').textContent=d.failed;
+      document.getElementById('ps-s').textContent=sent;
+      document.getElementById('ps-f').textContent=notSent;
       document.getElementById('ps-r').textContent=Math.max(0,actualTotal-processed);
       document.getElementById('ps-dr').textContent=fmtRate(d.delivery_rate);
       document.getElementById('ps-cost').textContent=fmtMoney(d.cost_amount,d.cost_currency);
       renderBroadcastDiagnostics(d.diagnostics);
       const title=
         d.status==='queued' ? `В очереди... ${pct}%` :
-        d.status==='done' ? `✅ Готово! ${d.sent}/${actualTotal}` :
+        d.status==='done' ? `✅ Готово! ${sent} sent, ${notSent} not sent` :
         `Рассылка... ${pct}%`;
       document.getElementById('bc-ptitle').textContent=title;
-      if(d.status==='done'){clearInterval(bcPollTimer);document.getElementById('bc-btn').disabled=false;showToast(`Готово: ${d.sent} отправлено`,d.failed?'err':'ok');loadBCHistory();}
+      if(d.status==='done'){
+        clearInterval(bcPollTimer);
+        document.getElementById('bc-btn').disabled=false;
+        showToast(`Готово: ${sent} sent, ${notSent} not sent`,notSent?'err':'ok');
+        loadBCHistory();
+      }
     }catch(e){}
   },1000);
 }
@@ -1181,12 +1188,14 @@ async function loadBCHistory(){
     const el=document.getElementById('bc-hist');
     if(!list.length){el.innerHTML='<div class="sr-empty">История пуста</div>';return;}
     el.innerHTML=list.map(b=>{
-      const pct=b.total>0?Math.round(b.sent/b.total*100):0;
+      const sent=Number(b.sent)||0;
+      const notSent=Number(b.not_sent)||0;
+      const pct=b.total>0?Math.round(((sent+notSent)/b.total)*100):0;
       const spend=fmtMoney(b.cost_amount,b.cost_currency);
       const dr=fmtRate(b.delivery_rate);
       return `<div class="hist-item">
         <div style="font-size:18px">📢</div>
-        <div class="hi-info"><div class="hi-name">${esc(b.name)}</div><div class="hi-body">${esc(b.body)}</div><div class="hi-st"><span class="ok">✓${b.sent}</span><span class="fl2">✗${b.failed}</span><span>DR ${dr}</span><span>${spend}</span><span>${pct}% очереди</span></div></div>
+        <div class="hi-info"><div class="hi-name">${esc(b.name)}</div><div class="hi-body">${esc(b.body)}</div><div class="hi-st"><span class="ok">✓${sent}</span><span class="fl2">!${notSent}</span><span>DR ${dr}</span><span>${spend}</span><span>${pct}% очереди</span></div></div>
         <div class="hi-right"><div class="hi-time">${fmtTime(b.created_at)}</div><span class="sbadge ${b.status==='done'?'s-done':'s-run'}">${b.status==='done'?'готово':'в процессе'}</span></div>
       </div>`;
     }).join('');
@@ -1288,16 +1297,18 @@ function resetBroadcastDiagnostics(){
 function renderBroadcastDiagnostics(diag){
   const summary=diag?.summary||{};
   const total=Number(summary.total)||0;
+  const notSentCount=Number(summary.not_sent_count)||0;
+  const deliverableTotal=Math.max(0,total-notSentCount);
   const telnyxAvg=pickNumber(summary.avg_provider_wait_seconds,summary.avg_provider_queue_seconds);
   const telnyxMax=pickNumber(summary.max_provider_wait_seconds,summary.max_provider_queue_seconds);
   document.getElementById('diag-coverage').textContent=
-    `Telnyx ${Number(summary.provider_received_count)||0}/${total} · carrier ${Number(summary.provider_sent_count)||0}/${total} · final ${Number(summary.provider_completed_count)||0}/${total}`;
+    `Telnyx ${Number(summary.provider_received_count)||0}/${deliverableTotal} · carrier ${Number(summary.provider_sent_count)||0}/${deliverableTotal} · final ${Number(summary.provider_completed_count)||0}/${deliverableTotal}`;
   document.getElementById('diag-local-avg').textContent=fmtSeconds(summary.avg_app_queue_seconds);
   document.getElementById('diag-local-max').textContent=fmtSeconds(summary.max_app_queue_seconds);
   document.getElementById('diag-provider-avg').textContent=fmtSeconds(telnyxAvg);
   document.getElementById('diag-provider-max').textContent=fmtSeconds(telnyxMax);
   document.getElementById('diag-total-avg').textContent=fmtSeconds(summary.avg_end_to_end_seconds);
-  document.getElementById('diag-finalized').textContent=`${Number(summary.provider_completed_count)||0} / ${total}`;
+  document.getElementById('diag-finalized').textContent=`${Number(summary.provider_completed_count)||0} / ${deliverableTotal}`;
 
   const list=diag?.recent_recipients||[];
   const el=document.getElementById('bc-diag-list');

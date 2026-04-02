@@ -1,6 +1,7 @@
 import hmac
 import json
 import os
+import re
 import psycopg2
 import psycopg2.extras
 import requests
@@ -49,6 +50,14 @@ NUMBER_LOOKUP_ENABLED = env_flag(
 NUMBER_LOOKUP_TIMEOUT_SECONDS = max(5, int(os.environ.get("NUMBER_LOOKUP_TIMEOUT_SECONDS", "15")))
 NUMBER_LOOKUP_CACHE_DAYS = max(1, int(os.environ.get("NUMBER_LOOKUP_CACHE_DAYS", "30")))
 NUMBER_LOOKUP_FAIL_CLOSED = env_flag("NUMBER_LOOKUP_FAIL_CLOSED", True)
+BRAND_NAME = os.environ.get("BRAND_NAME", "BARO Service").strip() or "BARO Service"
+HELP_PHONE_NUMBER = os.environ.get("HELP_PHONE_NUMBER", "+19292351197").strip() or "+19292351197"
+HELP_EMAIL = os.environ.get("HELP_EMAIL", "").strip()
+HELP_WEBSITE_URL = os.environ.get("HELP_WEBSITE_URL", "").strip()
+
+OPT_OUT_KEYWORDS = {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"}
+OPT_IN_KEYWORDS = {"START"}
+HELP_KEYWORDS = {"HELP"}
 
 
 def _safe_next_url(value):
@@ -183,6 +192,150 @@ def sanitize_lookup_result(result):
     }
 
 
+def normalize_keyword(text):
+    parts = re.findall(r"[A-Za-z]+", str(text or "").upper())
+    for part in parts:
+        if part in OPT_OUT_KEYWORDS or part in OPT_IN_KEYWORDS or part in HELP_KEYWORDS:
+            return part
+    return ""
+
+
+def build_opt_in_message():
+    website_part = f" or visit {HELP_WEBSITE_URL}" if HELP_WEBSITE_URL else ""
+    return (
+        f"Thank you for opting into SMS messaging from {BRAND_NAME}. "
+        f"Message frequency varies. To opt out, text STOP. "
+        f"For assistance, text HELP{website_part}. "
+        f"Message and data rates may apply."
+    )
+
+
+def build_opt_out_message():
+    return (
+        f"You will no longer receive messages from {BRAND_NAME}. "
+        f"To opt back in at any time reply START."
+    )
+
+
+def build_help_message():
+    support_lines = []
+    if HELP_PHONE_NUMBER:
+        support_lines.append(f"call us at {HELP_PHONE_NUMBER}")
+    if HELP_EMAIL:
+        support_lines.append(f"email us at {HELP_EMAIL}")
+    if HELP_WEBSITE_URL:
+        support_lines.append(f"visit {HELP_WEBSITE_URL}")
+
+    if not support_lines:
+        support_lines.append(f"call us at {MY_NUMBER}")
+
+    return f"Thank you for contacting {BRAND_NAME}. For assistance, " + ", ".join(support_lines) + "."
+
+
+def ensure_contact_row(conn, phone):
+    if not phone:
+        return
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO contacts (phone, updated_at)
+        VALUES (%s, %s)
+        ON CONFLICT (phone) DO UPDATE SET
+            updated_at = EXCLUDED.updated_at
+        """,
+        (phone, utcnow_iso())
+    )
+    cur.close()
+
+
+def set_contact_sms_status(conn, phone, status, keyword=""):
+    if not phone:
+        return
+    ensure_contact_row(conn, phone)
+    now_iso = utcnow_iso()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE contacts
+        SET
+            sms_opt_status = %s,
+            sms_last_keyword = %s,
+            sms_opted_out_at = CASE
+                WHEN %s = 'opted_out' THEN %s
+                ELSE NULL
+            END,
+            updated_at = %s
+        WHERE phone = %s
+        """,
+        (status, keyword or None, status, now_iso, now_iso, phone)
+    )
+    cur.close()
+
+
+def get_contact_sms_status(conn, phone):
+    if not phone:
+        return "unknown"
+    cur = conn.cursor()
+    cur.execute("SELECT sms_opt_status FROM contacts WHERE phone = %s", (phone,))
+    row = cur.fetchone()
+    cur.close()
+    if not row or not row[0]:
+        return "unknown"
+    return row[0]
+
+
+def send_system_message(conn, to_number, from_number, text):
+    try:
+        ok, _, data, error_text = send_telnyx_message(to_number, from_number, text)
+    except requests.RequestException as exc:
+        return False, str(exc)
+
+    if not ok:
+        return False, error_text or "Failed to send system message"
+
+    payload = data.get("data") or {}
+    provider_status = (payload.get("to") or [{}])[0].get("status", "sending")
+    insert_message_record(
+        conn,
+        "outbound",
+        to_number,
+        from_number,
+        text,
+        provider_status,
+        utcnow_iso(),
+        provider_message_id=payload.get("id", ""),
+        cost_payload=payload,
+    )
+    return True, ""
+
+
+def handle_compliance_keyword(conn, from_number, to_number, body):
+    keyword = normalize_keyword(body)
+    if keyword in OPT_OUT_KEYWORDS:
+        set_contact_sms_status(conn, from_number, "opted_out", keyword)
+        send_system_message(conn, from_number, to_number, build_opt_out_message())
+        return "opted_out"
+    if keyword in OPT_IN_KEYWORDS:
+        set_contact_sms_status(conn, from_number, "opted_in", keyword)
+        send_system_message(conn, from_number, to_number, build_opt_in_message())
+        return "opted_in"
+    if keyword in HELP_KEYWORDS:
+        ensure_contact_row(conn, from_number)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE contacts
+            SET sms_last_keyword = %s, updated_at = %s
+            WHERE phone = %s
+            """,
+            (keyword, utcnow_iso(), from_number)
+        )
+        cur.close()
+        send_system_message(conn, from_number, to_number, build_help_message())
+        return "help"
+    return ""
+
+
 def load_cached_lookup(conn, normalized_phone):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -265,6 +418,27 @@ def assess_phone_for_sms(conn, raw_number):
             "cache_hit": False,
             "lookup_performed": False,
             "source": "format",
+            "error_text": "",
+            "raw_payload": {},
+            "checked_at": utcnow_iso(),
+            "expires_at": iso_days_after(NUMBER_LOOKUP_CACHE_DAYS),
+        }
+
+    sms_status = get_contact_sms_status(conn, normalized_phone)
+    if sms_status == "opted_out":
+        return {
+            "input_phone": input_phone,
+            "normalized_phone": normalized_phone,
+            "accepted": False,
+            "decision": "rejected",
+            "reason": "opted_out",
+            "reason_display": f"{normalized_phone} has opted out via STOP",
+            "line_type": "",
+            "carrier_name": "",
+            "country_code": "",
+            "cache_hit": True,
+            "lookup_performed": False,
+            "source": "contacts",
             "error_text": "",
             "raw_payload": {},
             "checked_at": utcnow_iso(),
@@ -500,14 +674,15 @@ def refresh_broadcast_stats(conn, broadcast_id):
         SELECT
             COUNT(*)::int AS total,
             COUNT(*) FILTER (
-                WHERE status IN ('queued', 'sending', 'sent', 'delivered', 'delivery_failed', 'delivery_unconfirmed', 'sending_failed')
+                WHERE status IN ('sent', 'delivered', 'delivery_failed', 'delivery_unconfirmed')
             )::int AS sent,
+            COUNT(*) FILTER (WHERE status IN ('failed', 'not_sent', 'sending_failed'))::int AS not_sent,
             COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
             COUNT(*) FILTER (WHERE status = 'delivered')::int AS delivered,
-            COUNT(*) FILTER (WHERE status IN ('delivery_failed', 'sending_failed'))::int AS delivery_failed,
+            COUNT(*) FILTER (WHERE status = 'delivery_failed')::int AS delivery_failed,
             COUNT(*) FILTER (WHERE status = 'delivery_unconfirmed')::int AS delivery_unconfirmed,
             COUNT(*) FILTER (
-                WHERE status IN ('delivered', 'delivery_failed', 'delivery_unconfirmed', 'sending_failed')
+                WHERE status IN ('delivered', 'delivery_failed', 'delivery_unconfirmed', 'sending_failed', 'failed', 'not_sent')
             )::int AS finalized,
             COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
             COUNT(*) FILTER (WHERE status = 'sending')::int AS sending,
@@ -527,7 +702,7 @@ def refresh_broadcast_stats(conn, broadcast_id):
     confirmed_total = stats["delivered"] + stats["delivery_failed"] + stats["delivery_unconfirmed"]
     delivery_rate = round((stats["delivered"] * 100.0) / confirmed_total, 2) if confirmed_total else None
 
-    if stats["pending"] == stats["total"] and stats["sent"] == 0 and stats["failed"] == 0:
+    if stats["pending"] == stats["total"] and stats["sent"] == 0 and stats["not_sent"] == 0:
         status = "queued"
     elif stats["pending"] == 0 and stats["sending"] == 0:
         status = "done"
@@ -543,6 +718,7 @@ def refresh_broadcast_stats(conn, broadcast_id):
         SET
             total = %s,
             sent = %s,
+            not_sent = %s,
             failed = %s,
             delivered = %s,
             delivery_failed = %s,
@@ -561,6 +737,7 @@ def refresh_broadcast_stats(conn, broadcast_id):
         (
             stats["total"],
             stats["sent"],
+            stats["not_sent"],
             stats["failed"],
             stats["delivered"],
             stats["delivery_failed"],
@@ -755,6 +932,7 @@ def get_broadcast_diagnostics(conn, broadcast_id, recent_limit=8):
         f"""
         SELECT
             COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status IN ('failed', 'not_sent', 'sending_failed'))::int AS not_sent_count,
             COUNT(*) FILTER (WHERE sent_at IS NOT NULL)::int AS app_sent_count,
             COUNT(*) FILTER (WHERE provider_received_at IS NOT NULL)::int AS provider_received_count,
             COUNT(*) FILTER (WHERE provider_sent_at IS NOT NULL)::int AS provider_sent_count,
@@ -1174,6 +1352,7 @@ def init_db():
                 body       TEXT NOT NULL,
                 total      INTEGER DEFAULT 0,
                 sent       INTEGER DEFAULT 0,
+                not_sent   INTEGER DEFAULT 0,
                 failed     INTEGER DEFAULT 0,
                 status     TEXT DEFAULT 'running',
                 created_at TEXT NOT NULL
@@ -1236,6 +1415,9 @@ def init_db():
                 company    TEXT DEFAULT '',
                 tags       TEXT DEFAULT '',
                 notes      TEXT DEFAULT '',
+                sms_opt_status TEXT DEFAULT 'unknown',
+                sms_last_keyword TEXT DEFAULT '',
+                sms_opted_out_at TEXT,
                 updated_at TEXT NOT NULL
             )
         """)
@@ -1259,6 +1441,7 @@ def init_db():
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_wait_seconds NUMERIC(12, 3)")
 
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS from_number TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS not_sent INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS delivered INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS delivery_failed INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS delivery_unconfirmed INTEGER DEFAULT 0")
@@ -1283,6 +1466,9 @@ def init_db():
         cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS reason_display TEXT DEFAULT ''")
         cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS checked_at TEXT DEFAULT ''")
         cur.execute("ALTER TABLE number_lookup_cache ADD COLUMN IF NOT EXISTS expires_at TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_opt_status TEXT DEFAULT 'unknown'")
+        cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_last_keyword TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_opted_out_at TEXT")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_body ON messages USING gin(to_tsvector('simple', body))")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact)")
@@ -1319,8 +1505,9 @@ def telnyx_webhook():
         payload = data["data"]["payload"]
         from_num = payload.get("from", {}).get("phone_number", "")
         to_num = payload.get("to", [{}])[0].get("phone_number", MY_NUMBER)
-        body = payload.get("text", "")
+        body = (payload.get("text", "") or "").strip()
         db = get_db()
+        ensure_contact_row(db, from_num)
         insert_message_record(
             db,
             "inbound",
@@ -1332,6 +1519,7 @@ def telnyx_webhook():
             provider_message_id=payload.get("id", ""),
             cost_payload=payload,
         )
+        handle_compliance_keyword(db, from_num, to_num, body)
         db.commit()
 
     elif event_type in ("message.sent", "message.finalized"):
@@ -1361,10 +1549,11 @@ def api_contacts():
             SUM(CASE WHEN m.direction='inbound' AND m.status='received' THEN 1 ELSE 0 END) AS unread,
             COALESCE(c.name,    '') AS name,
             COALESCE(c.company, '') AS company,
-            COALESCE(c.tags,    '') AS tags
+            COALESCE(c.tags,    '') AS tags,
+            COALESCE(c.sms_opt_status, 'unknown') AS sms_opt_status
         FROM messages m
         LEFT JOIN contacts c ON c.phone = m.contact
-        GROUP BY m.contact, m.my_number, c.name, c.company, c.tags
+        GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status
         ORDER BY last_at DESC
     """)
     rows = cur.fetchall()
@@ -1410,7 +1599,7 @@ def api_contact_get(phone):
     cur.close()
 
     result = dict(row) if row else {
-        "phone": phone, "name": "", "company": "", "tags": "", "notes": ""
+        "phone": phone, "name": "", "company": "", "tags": "", "notes": "", "sms_opt_status": "unknown"
     }
     result["stats"] = dict(stats) if stats else {}
     return jsonify(result)
@@ -1575,6 +1764,7 @@ def api_broadcast():
     db = get_db()
     lookup = evaluate_numbers_for_sms(db, numbers_raw)
     numbers = lookup["accepted_numbers"]
+    rejected = lookup.get("rejected", [])
 
     if not text:
         db.commit()
@@ -1589,29 +1779,51 @@ def api_broadcast():
     cur.execute(
         """
         INSERT INTO broadcasts (
-            name, body, total, sent, failed, status, created_at, from_number, next_send_at
+            name, body, total, sent, not_sent, failed, status, created_at, from_number, next_send_at
         )
-        VALUES (%s,%s,%s,0,0,'queued',%s,%s,%s)
+        VALUES (%s,%s,%s,0,0,0,'queued',%s,%s,%s)
         RETURNING id
         """,
-        (name, text, len(numbers), now_iso, from_num, now_iso)
+        (name, text, lookup.get("processed", len(numbers)), now_iso, from_num, now_iso)
     )
     broadcast_id = cur.fetchone()[0]
-    cur.executemany(
-        """
-        INSERT INTO broadcast_recipients (broadcast_id, phone, status, attempts, queued_at)
-        VALUES (%s,%s,'pending',0,%s)
-        ON CONFLICT (broadcast_id, phone) DO NOTHING
-        """,
-        [(broadcast_id, number, now_iso) for number in numbers]
-    )
+    if numbers:
+        cur.executemany(
+            """
+            INSERT INTO broadcast_recipients (broadcast_id, phone, status, attempts, queued_at)
+            VALUES (%s,%s,'pending',0,%s)
+            ON CONFLICT (broadcast_id, phone) DO NOTHING
+            """,
+            [(broadcast_id, number, now_iso) for number in numbers]
+        )
+    if rejected:
+        cur.executemany(
+            """
+            INSERT INTO broadcast_recipients (
+                broadcast_id, phone, status, attempts, queued_at, finalized_at, last_error_detail
+            )
+            VALUES (%s,%s,'not_sent',0,%s,%s,%s)
+            ON CONFLICT (broadcast_id, phone) DO NOTHING
+            """,
+            [
+                (
+                    broadcast_id,
+                    item.get("normalized_phone") or item.get("input_phone"),
+                    now_iso,
+                    now_iso,
+                    item.get("reason_display") or item.get("reason") or "Filtered before send",
+                )
+                for item in rejected
+            ]
+        )
+    refresh_broadcast_stats(db, broadcast_id)
     db.commit()
     cur.close()
 
     return jsonify({
         "ok": True,
         "broadcast_id": broadcast_id,
-        "total": len(numbers),
+        "total": lookup.get("processed", len(numbers)),
         "lookup": lookup,
     })
 

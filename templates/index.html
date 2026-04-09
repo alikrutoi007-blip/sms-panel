@@ -1077,6 +1077,9 @@ function resetLookupSummary(){
   document.getElementById('lookup-rejected').textContent='0';
   document.getElementById('lookup-cache').textContent='0';
   document.getElementById('lookup-live').textContent='0';
+  const metricLabels=document.querySelectorAll('#lookup-box .lookup-grid .lookup-label');
+  if(metricLabels[0]) metricLabels[0].textContent='Пройдут в SMS';
+  if(metricLabels[3]) metricLabels[3].textContent='Live lookups';
   document.getElementById('lookup-good').innerHTML='<div class="lookup-empty">Проверка еще не запускалась.</div>';
   document.getElementById('lookup-bad').innerHTML='<div class="lookup-empty">Плохие номера появятся здесь.</div>';
   document.getElementById('lookup-apply-btn').disabled=true;
@@ -1098,14 +1101,18 @@ function renderLookupSummary(lookup){
     resetLookupSummary();
     return;
   }
+  const deferred=Number(lookup.deferred_lookup_count)||0;
+  const metricLabels=document.querySelectorAll('#lookup-box .lookup-grid .lookup-label');
   box.classList.add('visible');
   document.getElementById('lookup-accepted').textContent=lookup.accepted_count||0;
   document.getElementById('lookup-rejected').textContent=lookup.rejected_count||0;
   document.getElementById('lookup-cache').textContent=lookup.cache_hits||0;
-  document.getElementById('lookup-live').textContent=lookup.lookup_hits||0;
+  document.getElementById('lookup-live').textContent=deferred||(lookup.lookup_hits||0);
+  if(metricLabels[0]) metricLabels[0].textContent=deferred?'В очереди / good':'Пройдут в SMS';
+  if(metricLabels[3]) metricLabels[3].textContent=deferred?'Background lookup':'Live lookups';
   document.getElementById('lookup-good').innerHTML=renderLookupColumn(lookup.accepted||[],'SMS-capable номера не найдены.');
   document.getElementById('lookup-bad').innerHTML=renderLookupColumn(lookup.rejected||[],'Все номера выглядят пригодными.');
-  document.getElementById('lookup-apply-btn').disabled=!(lookup.accepted_numbers||[]).length;
+  document.getElementById('lookup-apply-btn').disabled=deferred?true:!(lookup.accepted_numbers||[]).length;
 }
 
 async function runNumberLookup(){
@@ -1150,10 +1157,16 @@ async function startBroadcast(){
   document.getElementById('ps-cost').textContent='$0.00';
   resetBroadcastDiagnostics();
   try{
-    const d=await (await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers:nums,text,from:MY_NUMBER})})).json();
+    const resp=await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers:nums,text,from:MY_NUMBER})});
+    const d=await resp.json().catch(()=>null);
+    if(!d){
+      throw new Error(resp.status?`HTTP ${resp.status}`:'NETWORK');
+    }
     renderLookupSummary(d.lookup||null);
     if(d.ok){
+      const deferred=Number(d.lookup?.deferred_lookup_count)||0;
       if((Number(d.lookup?.rejected_count)||0)>0) showToast(`Отсеяно ${d.lookup.rejected_count} bad numbers before send`,'err');
+      if(deferred>0) showToast(`Поставлено в очередь ${d.total} номеров. Lookup продолжится перед отправкой.`,'ok');
       pollBC(d.broadcast_id,d.total);
     }
     else{showToast('Ошибка: '+d.error,'err');document.getElementById('bc-btn').disabled=false;}

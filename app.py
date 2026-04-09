@@ -467,7 +467,28 @@ def save_cached_lookup(conn, result, expires_days):
     result["expires_at"] = expires_at
 
 
-def assess_phone_for_sms(conn, raw_number):
+def build_deferred_lookup_result(input_phone, normalized_phone):
+    return {
+        "input_phone": input_phone,
+        "normalized_phone": normalized_phone,
+        "accepted": True,
+        "decision": "queued_for_lookup",
+        "reason": "deferred_lookup",
+        "reason_display": "Queued for background lookup before send",
+        "line_type": "",
+        "carrier_name": "",
+        "country_code": "",
+        "cache_hit": False,
+        "lookup_performed": False,
+        "source": "deferred",
+        "error_text": "",
+        "raw_payload": {},
+        "checked_at": None,
+        "expires_at": None,
+    }
+
+
+def assess_phone_for_sms(conn, raw_number, allow_external_lookup=True):
     input_phone = str(raw_number or "").strip()
     normalized_phone = normalize_phone_number(input_phone, DEFAULT_COUNTRY_CODE)
     if not normalized_phone:
@@ -593,6 +614,9 @@ def assess_phone_for_sms(conn, raw_number):
         save_cached_lookup(conn, result, 1)
         return result
 
+    if not allow_external_lookup:
+        return build_deferred_lookup_result(input_phone, normalized_phone)
+
     try:
         ok, status_code, data, error_text = lookup_phone_number(
             TELNYX_API_KEY,
@@ -654,7 +678,7 @@ def assess_phone_for_sms(conn, raw_number):
     return result
 
 
-def evaluate_numbers_for_sms(conn, numbers_raw):
+def evaluate_numbers_for_sms(conn, numbers_raw, allow_external_lookup=True):
     results = []
     seen = set()
     duplicates_removed = 0
@@ -669,10 +693,11 @@ def evaluate_numbers_for_sms(conn, numbers_raw):
             duplicates_removed += 1
             continue
         seen.add(dedupe_key)
-        results.append(assess_phone_for_sms(conn, text))
+        results.append(assess_phone_for_sms(conn, text, allow_external_lookup=allow_external_lookup))
 
     accepted = [sanitize_lookup_result(r) for r in results if r.get("accepted")]
     rejected = [sanitize_lookup_result(r) for r in results if not r.get("accepted")]
+    deferred_lookup_count = sum(1 for r in results if r.get("source") == "deferred")
 
     return {
         "total_submitted": len([n for n in numbers_raw or [] if str(n or "").strip()]),
@@ -682,6 +707,8 @@ def evaluate_numbers_for_sms(conn, numbers_raw):
         "rejected_count": len(rejected),
         "cache_hits": sum(1 for r in results if r.get("cache_hit")),
         "lookup_hits": sum(1 for r in results if r.get("lookup_performed")),
+        "deferred_lookup_count": deferred_lookup_count,
+        "mode": "deferred_queue" if not allow_external_lookup else "live_lookup",
         "accepted_numbers": [r["normalized_phone"] for r in accepted if r.get("normalized_phone")],
         "accepted": accepted,
         "rejected": rejected,
@@ -1237,6 +1264,32 @@ def process_next_broadcast(conn):
     )
     cur.close()
     conn.commit()
+
+    lookup_result = assess_phone_for_sms(conn, row["phone"])
+    if not lookup_result.get("accepted"):
+        finalized_at = utcnow_iso()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE broadcast_recipients
+            SET
+                status = 'not_sent',
+                finalized_at = COALESCE(finalized_at, %s),
+                last_error_code = COALESCE(NULLIF(%s, ''), last_error_code),
+                last_error_detail = COALESCE(NULLIF(%s, ''), last_error_detail)
+            WHERE id = %s
+            """,
+            (
+                finalized_at,
+                lookup_result.get("reason", ""),
+                lookup_result.get("reason_display") or lookup_result.get("reason") or "Filtered before send",
+                row["id"],
+            )
+        )
+        cur.close()
+        refresh_broadcast_stats(conn, row["broadcast_id"])
+        conn.commit()
+        return True
 
     try:
         ok, status_code, data, error_text = send_telnyx_message(row["phone"], row["from_number"] or MY_NUMBER, row["body"])
@@ -2294,7 +2347,7 @@ def api_broadcast():
     from_num = body.get("from", MY_NUMBER)
 
     db = get_db()
-    lookup = evaluate_numbers_for_sms(db, numbers_raw)
+    lookup = evaluate_numbers_for_sms(db, numbers_raw, allow_external_lookup=False)
     numbers = lookup["accepted_numbers"]
     rejected = lookup.get("rejected", [])
 
@@ -2304,7 +2357,7 @@ def api_broadcast():
 
     if not numbers:
         db.commit()
-        return jsonify({"ok": False, "error": "No SMS-capable numbers after lookup", "lookup": lookup}), 400
+        return jsonify({"ok": False, "error": "No queueable numbers after validation", "lookup": lookup}), 400
 
     now_iso = utcnow_iso()
     cur = db.cursor()

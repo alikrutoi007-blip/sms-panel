@@ -1735,6 +1735,15 @@ def mark_ringcentral_sms_thread_read(db, contact):
 
 @app.before_request
 def require_login():
+    if not RINGCENTRAL_ENABLED and (
+        request.path == "/ringcentral"
+        or request.path == "/webhook/ringcentral"
+        or request.path.startswith("/api/ringcentral")
+    ):
+        if request.path.startswith("/api/") or request.path.startswith("/webhook/"):
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        return redirect(url_for("index"))
+
     if not AUTH_ENABLED:
         return None
 

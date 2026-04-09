@@ -14,14 +14,18 @@ from number_lookup import classify_lookup_result, lookup_phone_number, normalize
 from ringcentral_client import (
     RingCentralApiError,
     create_batch as ringcentral_create_batch,
+    create_sms_webhook_subscription as ringcentral_create_sms_webhook_subscription,
     create_webhook_subscription as ringcentral_create_webhook_subscription,
     get_batch as ringcentral_get_batch,
     get_batch_statuses as ringcentral_get_batch_statuses,
+    get_message as ringcentral_get_message,
     list_a2p_senders as ringcentral_list_a2p_senders,
     list_phone_number_inventory as ringcentral_list_phone_number_inventory,
     list_batch_messages as ringcentral_list_batch_messages,
+    list_sms_senders as ringcentral_list_sms_senders,
     normalize_recipients as ringcentral_normalize_recipients,
     ringcentral_config_summary,
+    send_sms_message as ringcentral_send_sms_message,
 )
 
 app = Flask(__name__)
@@ -214,6 +218,28 @@ def sanitize_lookup_result(result):
         "expires_at": result.get("expires_at"),
         "error_text": result.get("error_text", ""),
     }
+
+
+def has_prior_inbound_sms(conn, phone):
+    if not phone:
+        return False
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM messages
+                WHERE contact = %s
+                  AND direction = 'inbound'
+            )
+            """,
+            (phone,),
+        )
+        row = cur.fetchone()
+        return bool(row and row[0])
+    finally:
+        cur.close()
 
 
 def normalize_keyword(text):
@@ -463,6 +489,26 @@ def assess_phone_for_sms(conn, raw_number):
             "cache_hit": True,
             "lookup_performed": False,
             "source": "contacts",
+            "error_text": "",
+            "raw_payload": {},
+            "checked_at": utcnow_iso(),
+            "expires_at": iso_days_after(NUMBER_LOOKUP_CACHE_DAYS),
+        }
+
+    if has_prior_inbound_sms(conn, normalized_phone):
+        return {
+            "input_phone": input_phone,
+            "normalized_phone": normalized_phone,
+            "accepted": True,
+            "decision": "accepted",
+            "reason": "prior_inbound_sms",
+            "reason_display": "SMS-capable (prior inbound message received)",
+            "line_type": "inbound_verified",
+            "carrier_name": "",
+            "country_code": "",
+            "cache_hit": True,
+            "lookup_performed": False,
+            "source": "messages",
             "error_text": "",
             "raw_payload": {},
             "checked_at": utcnow_iso(),
@@ -1499,6 +1545,178 @@ def sync_ringcentral_batch(db, batch_id, include_messages=False):
     return build_ringcentral_batch_response(refreshed_row, status_summary=status_summary, messages_preview=messages_preview)
 
 
+def extract_ringcentral_phone(value):
+    if isinstance(value, dict):
+        return (value.get("phoneNumber") or value.get("phone_number") or "").strip()
+    return str(value or "").strip()
+
+
+def normalize_ringcentral_sms_payload(payload, fallback_direction="", fallback_body=""):
+    payload = payload or {}
+    direction = (payload.get("direction") or fallback_direction or "").strip().lower()
+    if direction not in {"inbound", "outbound"}:
+        direction = "inbound" if fallback_direction.lower() == "inbound" else "outbound"
+
+    from_number = extract_ringcentral_phone(payload.get("from"))
+    to_entries = payload.get("to") or []
+    to_number = extract_ringcentral_phone(to_entries[0] if to_entries else "")
+    body = payload.get("subject") or payload.get("text") or fallback_body or ""
+    created_at = payload.get("creationTime") or payload.get("createdAt") or utcnow_iso()
+    updated_at = payload.get("lastModifiedTime") or payload.get("lastUpdatedAt") or created_at
+
+    return {
+        "provider_message_id": str(payload.get("id") or ""),
+        "direction": direction,
+        "from_number": from_number,
+        "to_number": to_number,
+        "contact": from_number if direction == "inbound" else to_number,
+        "body": body,
+        "message_status": payload.get("messageStatus") or payload.get("status") or "",
+        "read_status": payload.get("readStatus") or ("Unread" if direction == "inbound" else ""),
+        "message_type": payload.get("type") or "SMS",
+        "availability": payload.get("availability") or "",
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "raw": payload,
+    }
+
+
+def upsert_ringcentral_sms_message(db, message_data, last_event=""):
+    if not message_data or not message_data.get("provider_message_id"):
+        return None
+
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO ringcentral_sms_messages (
+            provider_message_id,
+            direction,
+            from_number,
+            to_number,
+            contact,
+            body,
+            message_status,
+            read_status,
+            message_type,
+            availability,
+            created_at,
+            updated_at,
+            last_event,
+            raw_payload
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (provider_message_id) DO UPDATE SET
+            direction = EXCLUDED.direction,
+            from_number = EXCLUDED.from_number,
+            to_number = EXCLUDED.to_number,
+            contact = EXCLUDED.contact,
+            body = CASE
+                WHEN COALESCE(EXCLUDED.body, '') <> '' THEN EXCLUDED.body
+                ELSE ringcentral_sms_messages.body
+            END,
+            message_status = COALESCE(NULLIF(EXCLUDED.message_status, ''), ringcentral_sms_messages.message_status),
+            read_status = COALESCE(NULLIF(EXCLUDED.read_status, ''), ringcentral_sms_messages.read_status),
+            message_type = COALESCE(NULLIF(EXCLUDED.message_type, ''), ringcentral_sms_messages.message_type),
+            availability = COALESCE(NULLIF(EXCLUDED.availability, ''), ringcentral_sms_messages.availability),
+            created_at = COALESCE(NULLIF(EXCLUDED.created_at, ''), ringcentral_sms_messages.created_at),
+            updated_at = COALESCE(NULLIF(EXCLUDED.updated_at, ''), ringcentral_sms_messages.updated_at),
+            last_event = COALESCE(NULLIF(EXCLUDED.last_event, ''), ringcentral_sms_messages.last_event),
+            raw_payload = COALESCE(NULLIF(EXCLUDED.raw_payload, ''), ringcentral_sms_messages.raw_payload)
+        RETURNING id
+        """,
+        (
+            message_data["provider_message_id"],
+            message_data["direction"],
+            message_data["from_number"],
+            message_data["to_number"],
+            message_data["contact"],
+            message_data["body"],
+            message_data["message_status"],
+            message_data["read_status"],
+            message_data["message_type"],
+            message_data["availability"],
+            message_data["created_at"],
+            message_data["updated_at"],
+            last_event,
+            json.dumps(message_data["raw"]),
+        )
+    )
+    row_id = cur.fetchone()[0]
+    cur.close()
+    return row_id
+
+
+def get_ringcentral_sms_threads(db):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT *
+        FROM (
+            SELECT DISTINCT ON (contact)
+                id,
+                contact,
+                direction,
+                from_number,
+                to_number,
+                body,
+                message_status,
+                read_status,
+                created_at,
+                updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM ringcentral_sms_messages m2
+                    WHERE m2.contact = m1.contact
+                )::int AS total_messages,
+                (
+                    SELECT COUNT(*)
+                    FROM ringcentral_sms_messages m2
+                    WHERE m2.contact = m1.contact
+                      AND m2.direction = 'inbound'
+                      AND COALESCE(m2.read_status, '') <> 'Read'
+                )::int AS unread_count
+            FROM ringcentral_sms_messages m1
+            ORDER BY contact, created_at DESC, id DESC
+        ) latest
+        ORDER BY created_at DESC, id DESC
+        """
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    cur.close()
+    return rows
+
+
+def get_ringcentral_sms_thread_messages(db, contact):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT *
+        FROM ringcentral_sms_messages
+        WHERE contact = %s
+        ORDER BY created_at ASC, id ASC
+        """,
+        (contact,)
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    cur.close()
+    return rows
+
+
+def mark_ringcentral_sms_thread_read(db, contact):
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE ringcentral_sms_messages
+        SET read_status = 'Read'
+        WHERE contact = %s
+          AND direction = 'inbound'
+          AND COALESCE(read_status, '') <> 'Read'
+        """,
+        (contact,)
+    )
+    cur.close()
+
+
 @app.before_request
 def require_login():
     if not AUTH_ENABLED:
@@ -1661,6 +1879,26 @@ def init_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ringcentral_sms_messages (
+                id                  SERIAL PRIMARY KEY,
+                provider_message_id TEXT UNIQUE NOT NULL,
+                direction           TEXT NOT NULL,
+                from_number         TEXT NOT NULL,
+                to_number           TEXT NOT NULL,
+                contact             TEXT NOT NULL,
+                body                TEXT DEFAULT '',
+                message_status      TEXT DEFAULT '',
+                read_status         TEXT DEFAULT '',
+                message_type        TEXT DEFAULT 'SMS',
+                availability        TEXT DEFAULT '',
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL,
+                last_event          TEXT DEFAULT '',
+                raw_payload         TEXT DEFAULT '{}'
+            )
+        """)
+
         # Индекс для быстрого поиска по тексту
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_message_id TEXT")
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS cost_amount NUMERIC(12, 6)")
@@ -1725,6 +1963,14 @@ def init_db():
         cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS last_synced_at TEXT")
         cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT ''")
         cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS latest_payload TEXT DEFAULT '{}'")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS body TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS message_status TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS read_status TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS message_type TEXT DEFAULT 'SMS'")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS availability TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS updated_at TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS last_event TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_sms_messages ADD COLUMN IF NOT EXISTS raw_payload TEXT DEFAULT '{}'")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_body ON messages USING gin(to_tsvector('simple', body))")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact)")
@@ -1737,6 +1983,9 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_number_lookup_cache_expires_at ON number_lookup_cache(expires_at)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ringcentral_batches_provider_id ON ringcentral_batches(provider_batch_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ringcentral_batches_created_at ON ringcentral_batches(created_at)")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ringcentral_sms_provider_id ON ringcentral_sms_messages(provider_message_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ringcentral_sms_contact ON ringcentral_sms_messages(contact)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ringcentral_sms_created_at ON ringcentral_sms_messages(created_at)")
         cur.execute(
             """
             INSERT INTO app_state (key, value)
@@ -2123,12 +2372,14 @@ def api_broadcasts():
 def api_ringcentral_config():
     summary = ringcentral_config_summary()
     senders = []
+    sms_senders = []
     inventory = []
     senders_error = ""
 
     if summary["enabled"]:
         try:
             senders = ringcentral_list_a2p_senders()
+            sms_senders = ringcentral_list_sms_senders()
             inventory = ringcentral_list_phone_number_inventory()
         except RingCentralApiError as exc:
             senders_error = exc.message
@@ -2137,6 +2388,7 @@ def api_ringcentral_config():
         "ok": True,
         "config": summary,
         "senders": senders,
+        "sms_senders": sms_senders,
         "inventory": inventory,
         "senders_error": senders_error,
         "webhook_path": "/webhook/ringcentral",
@@ -2146,9 +2398,92 @@ def api_ringcentral_config():
             "high_volume": "https://developers.ringcentral.com/guide/messaging/sms/high-volume",
             "sending": "https://developers.ringcentral.com/guide/messaging/sms/high-volume/sending-highvolume-sms",
             "message_store": "https://developers.ringcentral.com/guide/messaging/sms/high-volume/message-store",
+            "standard_sms": "https://developers.ringcentral.com/guide/messaging/sms/sending-sms",
+            "receiving_sms": "https://developers.ringcentral.com/guide/messaging/sms/receiving-sms-mms",
             "webhooks": "https://developers.ringcentral.com/guide/notifications/webhooks/creating-webhooks",
         },
     })
+
+
+@app.route("/api/ringcentral/sms/threads")
+def api_ringcentral_sms_threads():
+    db = get_db()
+    return jsonify({"ok": True, "threads": get_ringcentral_sms_threads(db)})
+
+
+@app.route("/api/ringcentral/sms/thread/<path:contact>")
+def api_ringcentral_sms_thread(contact):
+    db = get_db()
+    mark_ringcentral_sms_thread_read(db, contact)
+    db.commit()
+    return jsonify({"ok": True, "messages": get_ringcentral_sms_thread_messages(db, contact)})
+
+
+@app.route("/api/ringcentral/sms/send", methods=["POST"])
+def api_ringcentral_sms_send():
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    from_number = (body.get("from") or "").strip()
+    to_number = normalize_phone_number(body.get("to"), DEFAULT_COUNTRY_CODE)
+
+    if not text:
+        return jsonify({"ok": False, "error": "Message text is required"}), 400
+    if not from_number:
+        return jsonify({"ok": False, "error": "Sender number is required"}), 400
+    if not to_number:
+        return jsonify({"ok": False, "error": "Recipient phone number is invalid"}), 400
+
+    try:
+        sms_senders = ringcentral_list_sms_senders()
+    except RingCentralApiError as exc:
+        return jsonify({"ok": False, "error": exc.message, "details": exc.response_data}), exc.status_code or 400
+
+    allowed_senders = {item["phone_number"] for item in sms_senders}
+    if from_number not in allowed_senders:
+        return jsonify({
+            "ok": False,
+            "error": "Selected sender is not available as an extension-owned SmsSender",
+        }), 400
+
+    try:
+        provider_payload = ringcentral_send_sms_message(from_number, to_number, text)
+    except RingCentralApiError as exc:
+        return jsonify({"ok": False, "error": exc.message, "details": exc.response_data}), exc.status_code or 400
+
+    message_data = normalize_ringcentral_sms_payload(provider_payload, fallback_direction="outbound", fallback_body=text)
+    if message_data["provider_message_id"]:
+        try:
+            full_message = ringcentral_get_message(message_data["provider_message_id"])
+            message_data = normalize_ringcentral_sms_payload(full_message, fallback_direction="outbound", fallback_body=text)
+        except RingCentralApiError:
+            pass
+
+    db = get_db()
+    upsert_ringcentral_sms_message(db, message_data, last_event="api_send")
+    db.commit()
+
+    return jsonify({
+        "ok": True,
+        "message": message_data,
+        "threads": get_ringcentral_sms_threads(db),
+    })
+
+
+@app.route("/api/ringcentral/sms/subscription", methods=["POST"])
+def api_ringcentral_sms_subscription():
+    body = request.get_json(silent=True) or {}
+    webhook_url = (body.get("webhook_url") or "").strip()
+    extension_id = (body.get("extension_id") or "").strip()
+
+    if not webhook_url.startswith("https://"):
+        return jsonify({"ok": False, "error": "Webhook URL must start with https://"}), 400
+
+    try:
+        subscription = ringcentral_create_sms_webhook_subscription(webhook_url, extension_id)
+    except RingCentralApiError as exc:
+        return jsonify({"ok": False, "error": exc.message, "details": exc.response_data}), exc.status_code or 400
+
+    return jsonify({"ok": True, "subscription": subscription})
 
 
 @app.route("/api/ringcentral/broadcasts")
@@ -2342,7 +2677,21 @@ def ringcentral_webhook():
     body = payload.get("body") or {}
     provider_batch_id = str(body.get("id") or body.get("batchId") or body.get("batch", {}).get("id") or "")
 
-    if provider_batch_id:
+    if "/message-store/instant" in event_name:
+        message_payload = body
+        provider_message_id = str(body.get("id") or "")
+        if provider_message_id:
+            try:
+                message_payload = ringcentral_get_message(provider_message_id)
+            except RingCentralApiError:
+                pass
+        message_data = normalize_ringcentral_sms_payload(message_payload, fallback_direction="inbound")
+        if message_data.get("provider_message_id"):
+            db = get_db()
+            upsert_ringcentral_sms_message(db, message_data, last_event=event_name or "sms_instant")
+            db.commit()
+
+    elif provider_batch_id:
         batch_payload = normalize_ringcentral_batch_payload(body if "/a2p-sms/batches" in event_name else {})
         db = get_db()
         cur = db.cursor()

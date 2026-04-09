@@ -8,6 +8,7 @@ import requests
 import time
 import threading
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from flask import Flask, request, jsonify, render_template, g, redirect, session, url_for
 
 from number_lookup import classify_lookup_result, lookup_phone_number, normalize_phone_number
@@ -66,6 +67,7 @@ NUMBER_LOOKUP_ENABLED = env_flag(
 NUMBER_LOOKUP_TIMEOUT_SECONDS = max(5, int(os.environ.get("NUMBER_LOOKUP_TIMEOUT_SECONDS", "15")))
 NUMBER_LOOKUP_CACHE_DAYS = max(1, int(os.environ.get("NUMBER_LOOKUP_CACHE_DAYS", "30")))
 NUMBER_LOOKUP_FAIL_CLOSED = env_flag("NUMBER_LOOKUP_FAIL_CLOSED", True)
+RINGCENTRAL_ENABLED = env_flag("RINGCENTRAL_ENABLED", False)
 BRAND_NAME = os.environ.get("BRAND_NAME", "BARO Service").strip() or "BARO Service"
 HELP_PHONE_NUMBER = os.environ.get("HELP_PHONE_NUMBER", "+19292351197").strip() or "+19292351197"
 HELP_EMAIL = os.environ.get("HELP_EMAIL", "").strip()
@@ -74,6 +76,20 @@ HELP_WEBSITE_URL = os.environ.get("HELP_WEBSITE_URL", "").strip()
 OPT_OUT_KEYWORDS = {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"}
 OPT_IN_KEYWORDS = {"START"}
 HELP_KEYWORDS = {"HELP"}
+
+
+def require_ringcentral_enabled(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if RINGCENTRAL_ENABLED:
+            return func(*args, **kwargs)
+
+        if request.path.startswith("/api/") or request.path.startswith("/webhook/"):
+            return jsonify({"ok": False, "error": "not_found"}), 404
+
+        return redirect(url_for("index"))
+
+    return wrapper
 
 
 def _safe_next_url(value):
@@ -2369,6 +2385,7 @@ def api_broadcasts():
 
 
 @app.route("/api/ringcentral/config")
+@require_ringcentral_enabled
 def api_ringcentral_config():
     summary = ringcentral_config_summary()
     senders = []
@@ -2406,12 +2423,14 @@ def api_ringcentral_config():
 
 
 @app.route("/api/ringcentral/sms/threads")
+@require_ringcentral_enabled
 def api_ringcentral_sms_threads():
     db = get_db()
     return jsonify({"ok": True, "threads": get_ringcentral_sms_threads(db)})
 
 
 @app.route("/api/ringcentral/sms/thread/<path:contact>")
+@require_ringcentral_enabled
 def api_ringcentral_sms_thread(contact):
     db = get_db()
     mark_ringcentral_sms_thread_read(db, contact)
@@ -2420,6 +2439,7 @@ def api_ringcentral_sms_thread(contact):
 
 
 @app.route("/api/ringcentral/sms/send", methods=["POST"])
+@require_ringcentral_enabled
 def api_ringcentral_sms_send():
     body = request.get_json(silent=True) or {}
     text = (body.get("text") or "").strip()
@@ -2470,6 +2490,7 @@ def api_ringcentral_sms_send():
 
 
 @app.route("/api/ringcentral/sms/subscription", methods=["POST"])
+@require_ringcentral_enabled
 def api_ringcentral_sms_subscription():
     body = request.get_json(silent=True) or {}
     webhook_url = (body.get("webhook_url") or "").strip()
@@ -2487,6 +2508,7 @@ def api_ringcentral_sms_subscription():
 
 
 @app.route("/api/ringcentral/broadcasts")
+@require_ringcentral_enabled
 def api_ringcentral_broadcasts():
     db = get_db()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -2497,6 +2519,7 @@ def api_ringcentral_broadcasts():
 
 
 @app.route("/api/ringcentral/broadcast", methods=["POST"])
+@require_ringcentral_enabled
 def api_ringcentral_broadcast():
     body = request.get_json(silent=True) or {}
     text = (body.get("text") or "").strip()
@@ -2620,6 +2643,7 @@ def api_ringcentral_broadcast():
 
 
 @app.route("/api/ringcentral/batch/<int:batch_id>")
+@require_ringcentral_enabled
 def api_ringcentral_batch(batch_id):
     db = get_db()
     row = get_ringcentral_batch_row(db, batch_id)
@@ -2646,6 +2670,7 @@ def api_ringcentral_batch(batch_id):
 
 
 @app.route("/api/ringcentral/subscription", methods=["POST"])
+@require_ringcentral_enabled
 def api_ringcentral_subscription():
     body = request.get_json(silent=True) or {}
     webhook_url = (body.get("webhook_url") or "").strip()
@@ -2663,6 +2688,7 @@ def api_ringcentral_subscription():
 
 
 @app.route("/webhook/ringcentral", methods=["GET", "POST"])
+@require_ringcentral_enabled
 def ringcentral_webhook():
     validation_token = request.headers.get("Validation-Token", "")
     response = jsonify({"ok": True})
@@ -2779,6 +2805,7 @@ def logout():
 # ═══════════════════════════════════════════════════════
 
 @app.route("/ringcentral")
+@require_ringcentral_enabled
 def ringcentral_index():
     return redirect(url_for("index"))
 

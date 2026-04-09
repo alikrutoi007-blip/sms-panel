@@ -233,6 +233,15 @@ def list_a2p_senders():
     return senders
 
 
+def list_sms_senders():
+    senders = [
+        item for item in list_phone_number_inventory()
+        if item["source"] == "extension" and item["has_sms_sender"]
+    ]
+    senders.sort(key=lambda item: item["phone_number"])
+    return senders
+
+
 def normalize_recipients(numbers, default_country_code="1"):
     accepted = []
     rejected = []
@@ -321,6 +330,27 @@ def list_batch_messages(batch_id, per_page=100):
     return records
 
 
+def send_sms_message(from_number, to_number, text):
+    payload = {
+        "from": {"phoneNumber": from_number},
+        "to": [{"phoneNumber": to_number}],
+        "text": text,
+    }
+    return api_request(
+        "POST",
+        f"/restapi/v1.0/account/~/extension/{RC_EXTENSION_ID}/sms",
+        json=payload,
+        expected_statuses=(200, 201),
+    )
+
+
+def get_message(message_id):
+    return api_request(
+        "GET",
+        f"/restapi/v1.0/account/~/extension/{RC_EXTENSION_ID}/message-store/{message_id}",
+    )
+
+
 def create_webhook_subscription(webhook_url, from_number=""):
     event_filters = ["/restapi/v1.0/account/~/a2p-sms/batches"]
     if from_number:
@@ -328,6 +358,25 @@ def create_webhook_subscription(webhook_url, from_number=""):
 
     payload = {
         "eventFilters": event_filters,
+        "deliveryMode": {
+            "transportType": "WebHook",
+            "address": webhook_url,
+        },
+    }
+    return api_request(
+        "POST",
+        "/restapi/v1.0/subscription",
+        json=payload,
+        expected_statuses=(200, 201),
+    )
+
+
+def create_sms_webhook_subscription(webhook_url, extension_id=""):
+    extension_id = str(extension_id or RC_EXTENSION_ID or "~").strip() or "~"
+    payload = {
+        "eventFilters": [
+            f"/restapi/v1.0/account/~/extension/{extension_id}/message-store/instant?type=SMS"
+        ],
         "deliveryMode": {
             "transportType": "WebHook",
             "address": webhook_url,

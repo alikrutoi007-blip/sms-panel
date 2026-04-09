@@ -2780,7 +2780,7 @@ def logout():
 
 @app.route("/ringcentral")
 def ringcentral_index():
-    return render_template("ringcentral.html", auth_enabled=AUTH_ENABLED)
+    return redirect(url_for("index"))
 
 
 @app.route("/")

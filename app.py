@@ -18,6 +18,7 @@ from ringcentral_client import (
     get_batch as ringcentral_get_batch,
     get_batch_statuses as ringcentral_get_batch_statuses,
     list_a2p_senders as ringcentral_list_a2p_senders,
+    list_phone_number_inventory as ringcentral_list_phone_number_inventory,
     list_batch_messages as ringcentral_list_batch_messages,
     normalize_recipients as ringcentral_normalize_recipients,
     ringcentral_config_summary,
@@ -2122,11 +2123,13 @@ def api_broadcasts():
 def api_ringcentral_config():
     summary = ringcentral_config_summary()
     senders = []
+    inventory = []
     senders_error = ""
 
     if summary["enabled"]:
         try:
             senders = ringcentral_list_a2p_senders()
+            inventory = ringcentral_list_phone_number_inventory()
         except RingCentralApiError as exc:
             senders_error = exc.message
 
@@ -2134,6 +2137,7 @@ def api_ringcentral_config():
         "ok": True,
         "config": summary,
         "senders": senders,
+        "inventory": inventory,
         "senders_error": senders_error,
         "webhook_path": "/webhook/ringcentral",
         "recommended_scopes": ["ReadAccounts", "ReadMessages", "SMS", "SubscriptionWebhook"],

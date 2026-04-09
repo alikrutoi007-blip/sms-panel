@@ -120,6 +120,17 @@ h1{font-size:38px;line-height:1.02;letter-spacing:-.04em}
   padding:10px 12px;border-radius:14px;background:#fff;border:1px solid var(--line);
   font-size:13px;color:var(--muted);line-height:1.55;
 }
+.inventory-list{display:flex;flex-direction:column;gap:10px;margin-top:14px}
+.inventory-item{padding:12px 14px;border-radius:16px;background:#fff;border:1px solid var(--line)}
+.inventory-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.inventory-phone{font-size:14px;font-weight:600;letter-spacing:-.02em}
+.inventory-meta{margin-top:6px;color:var(--muted);font-size:12px;line-height:1.55;word-break:break-word}
+.inventory-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.inventory-tag{
+  display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;
+  background:#f6f8fd;border:1px solid var(--line);font-family:'IBM Plex Mono',monospace;
+  font-size:10px;letter-spacing:.04em;color:var(--muted);
+}
 label{
   display:block;margin-bottom:14px;
 }
@@ -276,6 +287,8 @@ input:focus,select:focus,textarea:focus{border-color:rgba(23,104,255,.45);box-sh
             <button id="create-subscription-btn" class="soft-btn" type="button">Create Webhook Subscription</button>
           </div>
           <div id="subscription-result" class="note hidden"></div>
+          <div id="inventory-panel" class="note hidden"></div>
+          <div id="inventory-list" class="inventory-list"></div>
         </section>
 
         <section class="card">
@@ -475,6 +488,7 @@ function renderSetup(data) {
   state.config = data;
   const badges = [];
   const config = data.config || {};
+  const inventory = data.inventory || [];
 
   badges.push(`<div class="badge ${config.enabled ? 'ok' : 'err'}">${config.enabled ? 'Credentials ready' : 'Credentials missing'}</div>`);
   badges.push(`<div class="badge ${data.senders && data.senders.length ? 'ok' : 'warn'}">${data.senders && data.senders.length ? `${data.senders.length} A2P senders` : 'No A2P sender yet'}</div>`);
@@ -524,6 +538,52 @@ function renderSetup(data) {
     `).join('');
   }
   document.getElementById('sender-hint').textContent = senders.length ? `${senders.length} sender(s) found` : 'assign number to campaign';
+
+  const inventoryPanel = document.getElementById('inventory-panel');
+  const inventoryList = document.getElementById('inventory-list');
+  if (!inventory.length) {
+    inventoryPanel.textContent = data.senders_error
+      ? `API returned an error: ${data.senders_error}`
+      : 'API did not return any visible phone numbers for this JWT extension yet.';
+    inventoryPanel.classList.remove('hidden');
+    inventoryList.innerHTML = '';
+  } else {
+    const extensionA2p = inventory.filter((item) => item.source === 'extension' && item.has_a2p_sender);
+    const accountA2p = inventory.filter((item) => item.source === 'account' && item.has_a2p_sender);
+    const extensionAny = inventory.filter((item) => item.source === 'extension');
+
+    let message = `Visible via API: ${inventory.length} number(s). `;
+    if (!extensionAny.length) {
+      message += 'У текущего JWT extension не видно ни одного assigned номера.';
+    } else if (!extensionA2p.length && accountA2p.length) {
+      message += 'A2P номер виден на account уровне, но не виден как extension-owned sender. Скорее всего номер assigned не тому extension, под которым выдан JWT.';
+    } else if (!extensionA2p.length) {
+      message += 'Номера видны, но ни у одного нет feature A2PSmsSender.';
+    } else {
+      message += 'Extension-owned A2P sender найден, dropdown должен быть заполнен.';
+    }
+
+    inventoryPanel.textContent = message;
+    inventoryPanel.classList.remove('hidden');
+    inventoryList.innerHTML = inventory.map((item) => `
+      <div class="inventory-item">
+        <div class="inventory-head">
+          <div>
+            <div class="inventory-phone">${item.phone_number || 'Unknown number'}</div>
+            <div class="inventory-meta">
+              source: ${item.source} · usage: ${item.usage_type || '—'} · payment: ${item.payment_type || '—'} · extension: ${item.extension_id || '—'}
+            </div>
+          </div>
+          <div class="status-pill ${item.has_a2p_sender ? 'completed' : 'processing'}">
+            ${item.has_a2p_sender ? 'A2P Sender' : 'Not A2P'}
+          </div>
+        </div>
+        <div class="inventory-tags">
+          ${(item.features || []).map((feature) => `<span class="inventory-tag">${feature}</span>`).join('') || '<span class="inventory-tag">no features</span>'}
+        </div>
+      </div>
+    `).join('');
+  }
 
   if (data.senders_error) {
     showToast(data.senders_error, 'err');

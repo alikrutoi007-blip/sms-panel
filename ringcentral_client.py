@@ -183,8 +183,6 @@ def _extract_sender_records(records, source):
     senders = []
     for record in records or []:
         features = list(record.get("features") or [])
-        if "A2PSmsSender" not in features:
-            continue
         senders.append(
             {
                 "id": str(record.get("id") or ""),
@@ -194,32 +192,43 @@ def _extract_sender_records(records, source):
                 "features": features,
                 "source": source,
                 "extension_id": str(record.get("extension", {}).get("id") or record.get("extensionId") or ""),
+                "has_a2p_sender": "A2PSmsSender" in features,
+                "has_sms_sender": "SmsSender" in features,
             }
         )
     return senders
 
 
-def list_a2p_senders():
-    senders = []
+def list_phone_number_inventory():
+    inventory = []
     seen = set()
 
     extension_data = api_request(
         "GET",
         f"/restapi/v1.0/account/~/extension/{RC_EXTENSION_ID}/phone-number",
     )
-    for sender in _extract_sender_records(extension_data.get("records"), "extension"):
-        key = sender["phone_number"]
+    for record in _extract_sender_records(extension_data.get("records"), "extension"):
+        key = record["phone_number"]
         if key and key not in seen:
-            senders.append(sender)
+            inventory.append(record)
             seen.add(key)
 
     account_data = api_request("GET", "/restapi/v1.0/account/~/phone-number")
-    for sender in _extract_sender_records(account_data.get("records"), "account"):
-        key = sender["phone_number"]
+    for record in _extract_sender_records(account_data.get("records"), "account"):
+        key = record["phone_number"]
         if key and key not in seen:
-            senders.append(sender)
+            inventory.append(record)
             seen.add(key)
 
+    inventory.sort(key=lambda item: (item["source"], item["phone_number"]))
+    return inventory
+
+
+def list_a2p_senders():
+    senders = [
+        item for item in list_phone_number_inventory()
+        if item["source"] == "extension" and item["has_a2p_sender"]
+    ]
     senders.sort(key=lambda item: item["phone_number"])
     return senders
 

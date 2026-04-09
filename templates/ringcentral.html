@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RingCentral Broadcast Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3f5fb;
+  --ink:#11182b;
+  --muted:#6b7592;
+  --line:#d8deec;
+  --card:#ffffff;
+  --shadow:0 24px 70px rgba(17,24,43,.08);
+  --primary:#1768ff;
+  --primary-soft:rgba(23,104,255,.08);
+  --accent:#ff5b45;
+  --accent-soft:rgba(255,91,69,.09);
+  --emerald:#099268;
+  --emerald-soft:rgba(9,146,104,.1);
+  --gold:#c47b00;
+  --gold-soft:rgba(196,123,0,.12);
+  --danger:#c92a2a;
+  --danger-soft:rgba(201,42,42,.1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  min-height:100vh;
+  font-family:'IBM Plex Sans',sans-serif;
+  color:var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(23,104,255,.16), transparent 30%),
+    radial-gradient(circle at top right, rgba(255,91,69,.12), transparent 28%),
+    linear-gradient(180deg, #f7f8fd 0%, #eef2fb 100%);
+}
+a{color:inherit}
+.shell{width:min(1400px, calc(100% - 40px));margin:0 auto;padding:28px 0 34px}
+.topbar{
+  display:flex;justify-content:space-between;align-items:flex-start;gap:18px;
+  margin-bottom:20px;
+}
+.eyebrow{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--primary);margin-bottom:10px;
+}
+h1{font-size:38px;line-height:1.02;letter-spacing:-.04em}
+.sub{
+  margin-top:10px;max-width:720px;line-height:1.65;color:var(--muted);font-size:15px;
+}
+.top-actions{display:flex;gap:10px;flex-wrap:wrap}
+.ghost-btn,.solid-btn,.soft-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-height:42px;padding:0 16px;border-radius:14px;text-decoration:none;
+  font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.06em;
+  text-transform:uppercase;border:1px solid transparent;cursor:pointer;transition:.16s ease;
+}
+.ghost-btn{background:rgba(255,255,255,.8);border-color:var(--line);color:var(--ink)}
+.ghost-btn:hover{border-color:var(--primary);color:var(--primary)}
+.solid-btn{background:var(--primary);color:#fff}
+.solid-btn:hover{filter:brightness(1.03)}
+.soft-btn{background:var(--primary-soft);color:var(--primary);border-color:rgba(23,104,255,.16)}
+.soft-btn:hover{background:rgba(23,104,255,.12)}
+.layout{
+  display:grid;grid-template-columns:minmax(340px, 430px) minmax(0, 1fr);gap:20px;
+}
+.stack{display:flex;flex-direction:column;gap:18px}
+.card{
+  background:rgba(255,255,255,.92);
+  border:1px solid rgba(216,222,236,.88);
+  border-radius:24px;
+  box-shadow:var(--shadow);
+  padding:22px 22px 20px;
+}
+.card.hero{
+  background:
+    linear-gradient(135deg, rgba(23,104,255,.09), rgba(255,91,69,.06)),
+    rgba(255,255,255,.96);
+}
+.section-row{
+  display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;
+}
+.section-head{
+  font-size:16px;font-weight:600;letter-spacing:-.02em;
+}
+.section-copy{
+  margin-top:4px;color:var(--muted);font-size:13px;line-height:1.55;
+}
+.tiny{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+}
+.badge-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.badge{
+  display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border-radius:999px;
+  border:1px solid var(--line);background:#fff;font-family:'IBM Plex Mono',monospace;
+  font-size:11px;letter-spacing:.04em;
+}
+.badge.ok{border-color:rgba(9,146,104,.18);background:var(--emerald-soft);color:var(--emerald)}
+.badge.warn{border-color:rgba(196,123,0,.18);background:var(--gold-soft);color:var(--gold)}
+.badge.err{border-color:rgba(201,42,42,.18);background:var(--danger-soft);color:var(--danger)}
+.setup-grid{
+  display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px;margin-top:12px;
+}
+.setup-tile{
+  border:1px solid var(--line);border-radius:18px;background:#fff;padding:14px;
+}
+.setup-tile strong{display:block;font-size:13px;margin-bottom:5px}
+.setup-tile p{font-size:13px;color:var(--muted);line-height:1.55}
+.note{
+  margin-top:12px;padding:12px 14px;border-radius:16px;
+  border:1px solid rgba(23,104,255,.14);background:rgba(23,104,255,.05);
+  color:var(--muted);font-size:13px;line-height:1.6;word-break:break-word;
+}
+.note.hidden,.panel-hidden{display:none}
+.mini-list{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.mini-item{
+  padding:10px 12px;border-radius:14px;background:#fff;border:1px solid var(--line);
+  font-size:13px;color:var(--muted);line-height:1.55;
+}
+label{
+  display:block;margin-bottom:14px;
+}
+.label{
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+  margin-bottom:7px;font-family:'IBM Plex Mono',monospace;
+  font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+}
+input,select,textarea{
+  width:100%;border:1px solid var(--line);background:#fff;color:var(--ink);
+  border-radius:16px;padding:13px 14px;outline:none;font:inherit;transition:.16s ease;
+}
+textarea{resize:vertical;min-height:120px;line-height:1.65}
+input:focus,select:focus,textarea:focus{border-color:rgba(23,104,255,.45);box-shadow:0 0 0 4px rgba(23,104,255,.09)}
+.meta{
+  display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  font-size:12px;color:var(--muted);margin:-2px 0 14px;
+}
+.meta strong{color:var(--ink)}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.current-top{
+  display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;
+}
+.status-pill{
+  display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;
+  background:#fff;border:1px solid var(--line);font-family:'IBM Plex Mono',monospace;
+  font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+}
+.status-pill.processing{color:var(--primary);border-color:rgba(23,104,255,.22);background:rgba(23,104,255,.08)}
+.status-pill.completed{color:var(--emerald);border-color:rgba(9,146,104,.18);background:var(--emerald-soft)}
+.status-pill.failed{color:var(--danger);border-color:rgba(201,42,42,.18);background:var(--danger-soft)}
+.metrics{
+  display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:10px;margin-top:16px;
+}
+.metric{
+  padding:14px;border-radius:18px;background:#fff;border:1px solid var(--line);
+}
+.metric-value{
+  font-size:26px;line-height:1;font-weight:600;letter-spacing:-.04em;
+}
+.metric-label{
+  margin-top:6px;font-size:12px;color:var(--muted);line-height:1.45;
+}
+.status-grid{
+  display:grid;grid-template-columns:repeat(5, minmax(0, 1fr));gap:10px;margin-top:16px;
+}
+.status-card{
+  padding:12px;border-radius:18px;border:1px solid var(--line);background:#fff;
+}
+.status-card strong{
+  display:block;font-size:22px;line-height:1;font-weight:600;letter-spacing:-.04em;
+}
+.status-card span{
+  display:block;margin-top:6px;font-size:11px;color:var(--muted);line-height:1.45;
+}
+.status-card em{
+  display:block;margin-top:6px;font-style:normal;font-size:11px;color:var(--primary);
+}
+.history-list,.message-list,.error-list{
+  display:flex;flex-direction:column;gap:10px;
+}
+.history-item,.message-item,.error-item{
+  border:1px solid var(--line);background:#fff;border-radius:18px;padding:14px;
+}
+.history-item{
+  cursor:pointer;transition:.16s ease;
+}
+.history-item:hover,.history-item.active{
+  border-color:rgba(23,104,255,.35);box-shadow:0 10px 28px rgba(23,104,255,.08);
+}
+.history-top,.message-top,.error-top{
+  display:flex;justify-content:space-between;gap:10px;align-items:flex-start;
+}
+.history-title,.message-to{
+  font-size:14px;font-weight:600;letter-spacing:-.02em;
+}
+.history-meta,.message-meta,.error-meta{
+  margin-top:7px;color:var(--muted);font-size:12px;line-height:1.55;
+}
+.message-body{
+  margin-top:10px;padding:10px 12px;border-radius:14px;background:#f6f8fd;
+  color:var(--ink);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word;
+}
+.empty{
+  border:1px dashed var(--line);border-radius:18px;padding:22px;text-align:center;
+  color:var(--muted);font-size:13px;line-height:1.65;background:rgba(255,255,255,.6);
+}
+.small-link{
+  color:var(--primary);text-decoration:none;font-family:'IBM Plex Mono',monospace;
+  font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+}
+#toast{
+  position:fixed;right:18px;bottom:18px;max-width:320px;padding:12px 14px;border-radius:16px;
+  color:#fff;background:var(--ink);box-shadow:0 18px 40px rgba(17,24,43,.2);
+  opacity:0;transform:translateY(12px);pointer-events:none;transition:.2s ease;
+}
+#toast.show{opacity:1;transform:none}
+#toast.err{background:var(--danger)}
+#toast.ok{background:var(--emerald)}
+@media (max-width: 1120px){
+  .layout{grid-template-columns:1fr}
+}
+@media (max-width: 760px){
+  .shell{width:min(100% - 20px, 100%);padding:18px 0 26px}
+  .topbar{flex-direction:column}
+  h1{font-size:30px}
+  .metrics{grid-template-columns:1fr 1fr}
+  .status-grid{grid-template-columns:1fr 1fr}
+  .setup-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">RingCentral / High Volume SMS</div>
+        <h1>Broadcast Studio</h1>
+        <p class="sub">
+          Отдельная панель для RingCentral 10DLC-рассылок. Telnyx остаётся на главной странице без изменений,
+          а здесь мы работаем только с High Volume SMS batch API и статусами доставки. Для 10DLC long-code RingCentral
+          сам держит очередь и публикует скорость примерно до 1 сообщения в секунду на номер, так что batch может
+          создаться мгновенно, а доставка будет докатываться постепенно.
+        </p>
+      </div>
+      <div class="top-actions">
+        <a class="ghost-btn" href="/">Telnyx Panel</a>
+        {% if auth_enabled %}
+        <a class="ghost-btn" href="/logout">Exit</a>
+        {% endif %}
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stack">
+        <section class="card">
+          <div class="section-row">
+            <div>
+              <div class="section-head">Setup Status</div>
+              <div class="section-copy">Здесь видно, готово ли приложение к JWT-авторизации, найден ли A2P sender и какой webhook URL использовать.</div>
+            </div>
+            <a class="small-link" href="https://developers.ringcentral.com/guide/messaging/sms/high-volume" target="_blank" rel="noreferrer">Docs</a>
+          </div>
+          <div id="config-badges" class="badge-row"></div>
+          <div class="setup-grid" id="setup-grid"></div>
+          <div class="mini-list">
+            <div class="mini-item"><strong>Что выбрать в onboarding:</strong> `I am a software developer and I'd like to work with code`.</div>
+            <div class="mini-item"><strong>Preferred language:</strong> `Python`, если доступно. Это влияет только на примеры в документации.</div>
+            <div class="mini-item"><strong>App type дальше:</strong> `REST API App` c `JWT auth flow` и scopes `ReadAccounts`, `ReadMessages`, `SMS`, `SubscriptionWebhook`.</div>
+            <div class="mini-item"><strong>Отправка:</strong> используй номер, у которого в API видна feature `A2PSmsSender`.</div>
+            <div class="mini-item"><strong>Throughput:</strong> для 10DLC long-code ориентируйся примерно на `up to 1 msg/sec` на номер; дополнительный throttle в приложении не нужен, потому что High Volume SMS уже ставит сообщения в очередь сам.</div>
+          </div>
+          <div class="actions">
+            <button id="create-subscription-btn" class="soft-btn" type="button">Create Webhook Subscription</button>
+          </div>
+          <div id="subscription-result" class="note hidden"></div>
+        </section>
+
+        <section class="card">
+          <div class="section-row">
+            <div>
+              <div class="section-head">New Broadcast</div>
+              <div class="section-copy">Один batch запрос может отправить одно и то же сообщение сразу многим получателям.</div>
+            </div>
+          </div>
+
+          <form id="broadcast-form">
+            <label>
+              <span class="label"><span>Sender Number</span><span id="sender-hint">A2P only</span></span>
+              <select id="sender-select" required>
+                <option value="">Loading senders...</option>
+              </select>
+            </label>
+
+            <label>
+              <span class="label"><span>Broadcast Name</span><span>Internal label</span></span>
+              <input id="bc-name" type="text" maxlength="120" placeholder="Spring promo / appointment reminders / follow-up">
+            </label>
+
+            <label>
+              <span class="label"><span>Recipients</span><span>One per line or comma-separated</span></span>
+              <textarea id="bc-recipients" placeholder="+1 555 123 4567&#10;+1 555 222 3344&#10;+1 555 777 9911"></textarea>
+            </label>
+            <div class="meta">
+              <span id="recipient-meta">0 raw recipients</span>
+              <span>Номера будут приведены к E.164 перед отправкой.</span>
+            </div>
+
+            <label>
+              <span class="label"><span>Message</span><span id="char-count">0 chars</span></span>
+              <textarea id="bc-text" maxlength="1000" placeholder="Hello, your appointment is confirmed for tomorrow at 11:30 AM. Reply STOP to opt out."></textarea>
+            </label>
+            <div class="meta">
+              <span>High Volume SMS не поддерживает MMS и вложения.</span>
+              <span>Сегментация зависит от символов и carrier rules.</span>
+            </div>
+
+            <div class="actions">
+              <button class="solid-btn" type="submit">Start RingCentral Batch</button>
+              <button class="ghost-btn" id="refresh-batches-btn" type="button">Refresh History</button>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <section class="stack">
+        <section class="card hero">
+          <div class="section-row">
+            <div>
+              <div class="section-head">Current Batch</div>
+              <div class="section-copy">После отправки здесь видно общую стоимость, текущие статусы и confirm-based delivery rate.</div>
+            </div>
+          </div>
+
+          <div id="current-empty" class="empty">
+            Пока ничего не выбрано. Отправь первый batch или кликни на одну из записей ниже, чтобы подтянуть свежие статусы из RingCentral.
+          </div>
+
+          <div id="current-batch" class="panel-hidden">
+            <div class="current-top">
+              <div>
+                <div class="tiny" id="current-created"></div>
+                <div class="section-head" id="current-name"></div>
+                <div class="section-copy" id="current-copy"></div>
+              </div>
+              <div class="status-pill" id="current-status-pill">Processing</div>
+            </div>
+
+            <div class="metrics">
+              <div class="metric">
+                <div class="metric-value" id="metric-total">0</div>
+                <div class="metric-label">Recipients accepted into the batch</div>
+              </div>
+              <div class="metric">
+                <div class="metric-value" id="metric-cost">$0.0000</div>
+                <div class="metric-label">Total API-reported spend across current statuses</div>
+              </div>
+              <div class="metric">
+                <div class="metric-value" id="metric-rate">—</div>
+                <div class="metric-label">Delivery rate among finalized statuses</div>
+              </div>
+            </div>
+
+            <div class="status-grid" id="status-grid"></div>
+            <div id="sync-error" class="note hidden"></div>
+
+            <div style="margin-top:16px">
+              <div class="section-row" style="margin-bottom:12px">
+                <div class="section-head" style="font-size:14px">Error Code Summary</div>
+              </div>
+              <div id="error-list" class="error-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-row">
+            <div>
+              <div class="section-head">Recent Batches</div>
+              <div class="section-copy">История хранится отдельно от Telnyx и не затрагивает существующие переписки.</div>
+            </div>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="section-row">
+            <div>
+              <div class="section-head">Message Preview</div>
+              <div class="section-copy">Детали по отдельным сообщениям внутри выбранного batch.</div>
+            </div>
+          </div>
+          <div id="message-preview" class="message-list"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+const state = {
+  config: null,
+  batches: [],
+  currentBatchId: null,
+  pollTimer: null,
+};
+
+function showToast(message, variant = 'ok') {
+  const el = document.getElementById('toast');
+  el.textContent = message;
+  el.className = variant;
+  void el.offsetWidth;
+  el.classList.add('show');
+  window.clearTimeout(showToast._timer);
+  showToast._timer = window.setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed: ${response.status}`);
+  }
+  return data;
+}
+
+function formatDate(value) {
+  if (!value) return '—';
+  const parsed = new Date(value.endsWith('Z') ? value : `${value}Z`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function formatCurrency(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return `$${Number(value).toFixed(4)}`;
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return `${Number(value).toFixed(2)}%`;
+}
+
+function statusClass(value) {
+  const normalized = String(value || '').toLowerCase();
+  if (normalized === 'completed') return 'completed';
+  if (normalized.includes('fail')) return 'failed';
+  return 'processing';
+}
+
+function humanStatus(value) {
+  return String(value || 'Processing')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function rawRecipientCount() {
+  const value = document.getElementById('bc-recipients').value;
+  return value
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean).length;
+}
+
+function updateComposerMeta() {
+  document.getElementById('recipient-meta').textContent = `${rawRecipientCount()} raw recipients`;
+  document.getElementById('char-count').textContent = `${document.getElementById('bc-text').value.length} chars`;
+}
+
+function renderSetup(data) {
+  state.config = data;
+  const badges = [];
+  const config = data.config || {};
+
+  badges.push(`<div class="badge ${config.enabled ? 'ok' : 'err'}">${config.enabled ? 'Credentials ready' : 'Credentials missing'}</div>`);
+  badges.push(`<div class="badge ${data.senders && data.senders.length ? 'ok' : 'warn'}">${data.senders && data.senders.length ? `${data.senders.length} A2P senders` : 'No A2P sender yet'}</div>`);
+  badges.push(`<div class="badge ok">Webhook path ready</div>`);
+  badges.push(`<div class="badge warn">10DLC approval managed in RingCentral Admin</div>`);
+  document.getElementById('config-badges').innerHTML = badges.join('');
+
+  const setupTiles = [
+    {
+      title: 'API App',
+      body: config.enabled
+        ? 'JWT auth variables are configured in the app.'
+        : `Missing: ${(config.missing || []).join(', ')}`,
+    },
+    {
+      title: 'Webhook URL',
+      body: `${window.location.origin}${data.webhook_path || '/webhook/ringcentral'}`,
+    },
+    {
+      title: 'Scopes',
+      body: (data.recommended_scopes || []).join(', '),
+    },
+    {
+      title: 'Senders',
+      body: data.senders_error || (data.senders && data.senders.length
+        ? 'Only numbers with A2PSmsSender are shown in the dropdown.'
+        : 'After assigning numbers, reload this page to detect them.'),
+    },
+  ];
+
+  document.getElementById('setup-grid').innerHTML = setupTiles.map((tile) => `
+    <div class="setup-tile">
+      <strong>${tile.title}</strong>
+      <p>${tile.body}</p>
+    </div>
+  `).join('');
+
+  const senderSelect = document.getElementById('sender-select');
+  const senders = data.senders || [];
+  if (!senders.length) {
+    senderSelect.innerHTML = '<option value="">No A2P sender found</option>';
+  } else {
+    senderSelect.innerHTML = senders.map((sender, index) => `
+      <option value="${sender.phone_number}" ${index === 0 ? 'selected' : ''}>
+        ${sender.phone_number} · ${sender.source}
+      </option>
+    `).join('');
+  }
+  document.getElementById('sender-hint').textContent = senders.length ? `${senders.length} sender(s) found` : 'assign number to campaign';
+
+  if (data.senders_error) {
+    showToast(data.senders_error, 'err');
+  }
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  if (!state.batches.length) {
+    list.innerHTML = '<div class="empty">История пока пустая. Первый отправленный batch появится здесь автоматически.</div>';
+    return;
+  }
+
+  list.innerHTML = state.batches.map((batch) => `
+    <div class="history-item ${state.currentBatchId === batch.id ? 'active' : ''}" data-batch-id="${batch.id}">
+      <div class="history-top">
+        <div>
+          <div class="history-title">${batch.name || 'RingCentral Broadcast'}</div>
+          <div class="history-meta">${batch.from_number || '—'} · ${formatDate(batch.created_at)}</div>
+        </div>
+        <div class="status-pill ${statusClass(batch.provider_status)}">${humanStatus(batch.provider_status)}</div>
+      </div>
+      <div class="history-meta">
+        accepted: ${batch.total_accepted || 0} · rejected: ${batch.total_rejected || 0} · delivered: ${batch.delivered_count || 0}
+        · cost: ${formatCurrency(batch.provider_cost)}
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.history-item').forEach((node) => {
+    node.addEventListener('click', () => loadBatch(Number(node.dataset.batchId)));
+  });
+}
+
+function renderStatusGrid(summary) {
+  const list = summary.items || [];
+  const host = document.getElementById('status-grid');
+  host.innerHTML = list.map((item) => `
+    <div class="status-card">
+      <strong>${item.count}</strong>
+      <span>${item.label}</span>
+      <em>${formatCurrency(item.cost)}</em>
+    </div>
+  `).join('');
+}
+
+function renderErrorList(errorCounts) {
+  const host = document.getElementById('error-list');
+  const entries = Object.entries(errorCounts || {});
+  if (!entries.length) {
+    host.innerHTML = '<div class="empty">Пока нет агрегированных error codes для выбранного batch.</div>';
+    return;
+  }
+  host.innerHTML = entries.map(([code, count]) => `
+    <div class="error-item">
+      <div class="error-top">
+        <div class="history-title">${code}</div>
+        <div class="status-pill failed">${count}</div>
+      </div>
+      <div class="error-meta">RingCentral aggregated this error code across failed messages in the current batch.</div>
+    </div>
+  `).join('');
+}
+
+function renderMessages(messages) {
+  const host = document.getElementById('message-preview');
+  if (!messages || !messages.length) {
+    host.innerHTML = '<div class="empty">После синка здесь появятся отдельные сообщения из message store.</div>';
+    return;
+  }
+  host.innerHTML = messages.map((message) => `
+    <div class="message-item">
+      <div class="message-top">
+        <div>
+          <div class="message-to">${message.to || 'Unknown recipient'}</div>
+          <div class="message-meta">${humanStatus(message.status)} · ${formatDate(message.updated_at || message.created_at)}</div>
+        </div>
+        <div class="status-pill ${statusClass(message.status)}">${humanStatus(message.status)}</div>
+      </div>
+      <div class="message-meta">
+        cost: ${formatCurrency(message.cost)} · segments: ${message.segment_count || 0}${message.error_code ? ` · error: ${message.error_code}` : ''}
+      </div>
+      ${message.text ? `<div class="message-body">${message.text}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+function renderCurrent(batch) {
+  state.currentBatchId = batch.id;
+  document.getElementById('current-empty').classList.add('panel-hidden');
+  document.getElementById('current-batch').classList.remove('panel-hidden');
+
+  document.getElementById('current-created').textContent = `Batch ID ${batch.provider_batch_id || '—'}`;
+  document.getElementById('current-name').textContent = batch.name || 'RingCentral Broadcast';
+  document.getElementById('current-copy').textContent = `${batch.from_number || '—'} · created ${formatDate(batch.created_at)}${batch.completed_at ? ` · completed ${formatDate(batch.completed_at)}` : ''}`;
+
+  const statusPill = document.getElementById('current-status-pill');
+  statusPill.className = `status-pill ${statusClass(batch.provider_status)}`;
+  statusPill.textContent = humanStatus(batch.provider_status);
+
+  document.getElementById('metric-total').textContent = batch.total_remote || batch.total_accepted || 0;
+  document.getElementById('metric-cost').textContent = formatCurrency(batch.provider_cost);
+  document.getElementById('metric-rate').textContent = formatPercent(batch.delivery_rate);
+  renderStatusGrid(batch.status_summary || {});
+  renderErrorList((batch.status_summary || {}).error_code_counts || {});
+  renderMessages(batch.messages_preview || []);
+
+  const syncError = document.getElementById('sync-error');
+  if (batch.sync_error) {
+    syncError.textContent = batch.sync_error;
+    syncError.classList.remove('hidden');
+  } else {
+    syncError.textContent = '';
+    syncError.classList.add('hidden');
+  }
+
+  renderHistory();
+  schedulePolling(batch);
+}
+
+function schedulePolling(batch) {
+  window.clearTimeout(state.pollTimer);
+  const normalizedStatus = String(batch.provider_status || '').toLowerCase();
+  if (!batch.id || normalizedStatus === 'completed' || normalizedStatus.includes('failed')) {
+    return;
+  }
+  state.pollTimer = window.setTimeout(() => {
+    loadBatch(batch.id).catch((error) => showToast(error.message, 'err'));
+  }, 8000);
+}
+
+async function loadConfig() {
+  const data = await api('/api/ringcentral/config');
+  renderSetup(data);
+}
+
+async function loadBatches(selectFirst = false) {
+  state.batches = await api('/api/ringcentral/broadcasts');
+  renderHistory();
+  if (selectFirst && state.batches.length) {
+    await loadBatch(state.batches[0].id);
+  }
+}
+
+async function loadBatch(batchId) {
+  const data = await api(`/api/ringcentral/batch/${batchId}`);
+  renderCurrent(data.batch);
+}
+
+async function handleBroadcastSubmit(event) {
+  event.preventDefault();
+  const payload = {
+    from: document.getElementById('sender-select').value,
+    name: document.getElementById('bc-name').value.trim(),
+    numbers_text: document.getElementById('bc-recipients').value,
+    text: document.getElementById('bc-text').value.trim(),
+  };
+
+  if (!payload.from) {
+    showToast('Choose a sender number first', 'err');
+    return;
+  }
+
+  const button = event.submitter || document.querySelector('#broadcast-form button[type="submit"]');
+  button.disabled = true;
+  try {
+    const result = await api('/api/ringcentral/broadcast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showToast(`Batch started: ${result.batch.provider_batch_id}`, 'ok');
+    await loadBatches();
+    await loadBatch(result.batch.id);
+  } catch (error) {
+    showToast(error.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function createSubscription() {
+  const sender = document.getElementById('sender-select').value;
+  const target = document.getElementById('subscription-result');
+  target.classList.add('hidden');
+  try {
+    const result = await api('/api/ringcentral/subscription', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: sender,
+        webhook_url: `${window.location.origin}/webhook/ringcentral`,
+      }),
+    });
+    target.textContent = `Subscription created. ID: ${result.subscription.id || '—'} · expires: ${result.subscription.expirationTime || '—'}`;
+    target.classList.remove('hidden');
+    showToast('Webhook subscription created', 'ok');
+  } catch (error) {
+    target.textContent = error.message;
+    target.classList.remove('hidden');
+    showToast(error.message, 'err');
+  }
+}
+
+document.getElementById('bc-recipients').addEventListener('input', updateComposerMeta);
+document.getElementById('bc-text').addEventListener('input', updateComposerMeta);
+document.getElementById('broadcast-form').addEventListener('submit', handleBroadcastSubmit);
+document.getElementById('create-subscription-btn').addEventListener('click', createSubscription);
+document.getElementById('refresh-batches-btn').addEventListener('click', () => {
+  loadBatches(true).catch((error) => showToast(error.message, 'err'));
+});
+
+updateComposerMeta();
+loadConfig().catch((error) => showToast(error.message, 'err'));
+loadBatches(true).catch((error) => showToast(error.message, 'err'));
+</script>
+</body>
+</html>

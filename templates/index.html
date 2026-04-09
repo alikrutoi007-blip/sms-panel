@@ -67,6 +67,14 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
   letter-spacing:.05em;transition:all .15s;
 }
 .logout-link:hover{border-color:var(--a);color:var(--a)}
+.mode-link{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:28px;height:28px;padding:0 10px;border-radius:7px;
+  border:1px solid rgba(0,212,255,.22);background:rgba(0,212,255,.08);color:var(--a2);
+  text-decoration:none;font-family:'IBM Plex Mono',monospace;font-size:10px;
+  letter-spacing:.05em;transition:all .15s;
+}
+.mode-link:hover{border-color:var(--a2);color:#a8f3ff;background:rgba(0,212,255,.12)}
 
 /* search bar */
 .sb-search{padding:10px 12px;border-bottom:1px solid var(--b);display:flex;gap:6px}
@@ -408,6 +416,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
     </div>
     <div class="brand-r">
       <span class="my-chip">{{ my_number }}</span>
+      <a class="mode-link" href="/ringcentral" title="RingCentral broadcasts">rc</a>
       {% if auth_enabled %}
       <a class="logout-link" href="/logout" title="Выйти">exit</a>
       {% endif %}

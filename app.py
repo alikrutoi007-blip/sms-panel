@@ -11,6 +11,17 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, render_template, g, redirect, session, url_for
 
 from number_lookup import classify_lookup_result, lookup_phone_number, normalize_phone_number
+from ringcentral_client import (
+    RingCentralApiError,
+    create_batch as ringcentral_create_batch,
+    create_webhook_subscription as ringcentral_create_webhook_subscription,
+    get_batch as ringcentral_get_batch,
+    get_batch_statuses as ringcentral_get_batch_statuses,
+    list_a2p_senders as ringcentral_list_a2p_senders,
+    list_batch_messages as ringcentral_list_batch_messages,
+    normalize_recipients as ringcentral_normalize_recipients,
+    ringcentral_config_summary,
+)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SESSION_SECRET") or os.environ.get("FLASK_SECRET_KEY") or "change-me-in-production"
@@ -156,6 +167,18 @@ def coerce_float(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def coerce_int(value, default=0):
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
 
 
 def lookup_reason_display(decision, line_type="", error_text=""):
@@ -1288,6 +1311,193 @@ def start_broadcast_worker():
         _broadcast_worker.start()
 
 
+def parse_ringcentral_numbers_input(value):
+    if isinstance(value, list):
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+    text = str(value or "")
+    return [chunk.strip() for chunk in re.split(r"[\n,;]+", text) if chunk.strip()]
+
+
+def normalize_ringcentral_batch_payload(payload):
+    payload = payload or {}
+    return {
+        "provider_batch_id": str(payload.get("id") or ""),
+        "provider_status": payload.get("status") or "",
+        "from_number": payload.get("from") or "",
+        "text": payload.get("text") or "",
+        "batch_size": coerce_int(payload.get("batchSize") or payload.get("messageCount") or payload.get("batch_size")),
+        "processed_count": coerce_int(
+            payload.get("processedCount") or payload.get("processedMessageCount") or payload.get("processed_count")
+        ),
+        "created_at": payload.get("createdAt") or payload.get("creationTime") or "",
+        "updated_at": payload.get("lastUpdatedAt") or payload.get("lastModifiedTime") or "",
+        "raw": payload,
+    }
+
+
+def summarize_ringcentral_statuses(payload):
+    payload = payload or {}
+    status_map = [
+        ("queued", "queued_count", "Queued"),
+        ("sent", "sent_count", "Sent"),
+        ("delivered", "delivered_count", "Delivered"),
+        ("deliveryFailed", "delivery_failed_count", "Delivery Failed"),
+        ("sendingFailed", "sending_failed_count", "Sending Failed"),
+    ]
+
+    items = []
+    total_count = 0
+    total_cost = 0.0
+    error_code_counts = {}
+
+    for remote_key, local_key, label in status_map:
+        raw_item = payload.get(remote_key) or {}
+        count = coerce_int(raw_item.get("count"))
+        cost = coerce_float(raw_item.get("cost")) or 0.0
+        total_count += count
+        total_cost += cost
+        for code, code_count in (raw_item.get("errorCodeCounts") or {}).items():
+            error_code_counts[code] = error_code_counts.get(code, 0) + coerce_int(code_count)
+        items.append(
+            {
+                "key": local_key,
+                "remote_key": remote_key,
+                "label": label,
+                "count": count,
+                "cost": round(cost, 6),
+            }
+        )
+
+    delivered = next((item["count"] for item in items if item["key"] == "delivered_count"), 0)
+    delivery_failed = next((item["count"] for item in items if item["key"] == "delivery_failed_count"), 0)
+    sending_failed = next((item["count"] for item in items if item["key"] == "sending_failed_count"), 0)
+    finalized = delivered + delivery_failed + sending_failed
+    delivery_rate = round((delivered * 100.0) / finalized, 2) if finalized else None
+
+    return {
+        "items": items,
+        "queued_count": next((item["count"] for item in items if item["key"] == "queued_count"), 0),
+        "sent_count": next((item["count"] for item in items if item["key"] == "sent_count"), 0),
+        "delivered_count": delivered,
+        "delivery_failed_count": delivery_failed,
+        "sending_failed_count": sending_failed,
+        "finalized_count": finalized,
+        "total_count": total_count,
+        "total_cost": round(total_cost, 6),
+        "delivery_rate": delivery_rate,
+        "error_code_counts": error_code_counts,
+        "raw": payload,
+    }
+
+
+def build_ringcentral_batch_response(row, status_summary=None, messages_preview=None, sync_error=""):
+    row = dict(row or {})
+    if status_summary is None:
+        status_summary = {
+            "items": [
+                {"key": "queued_count", "remote_key": "queued", "label": "Queued", "count": coerce_int(row.get("queued_count")), "cost": 0.0},
+                {"key": "sent_count", "remote_key": "sent", "label": "Sent", "count": coerce_int(row.get("sent_count")), "cost": 0.0},
+                {"key": "delivered_count", "remote_key": "delivered", "label": "Delivered", "count": coerce_int(row.get("delivered_count")), "cost": 0.0},
+                {"key": "delivery_failed_count", "remote_key": "deliveryFailed", "label": "Delivery Failed", "count": coerce_int(row.get("delivery_failed_count")), "cost": 0.0},
+                {"key": "sending_failed_count", "remote_key": "sendingFailed", "label": "Sending Failed", "count": coerce_int(row.get("sending_failed_count")), "cost": 0.0},
+            ],
+            "queued_count": coerce_int(row.get("queued_count")),
+            "sent_count": coerce_int(row.get("sent_count")),
+            "delivered_count": coerce_int(row.get("delivered_count")),
+            "delivery_failed_count": coerce_int(row.get("delivery_failed_count")),
+            "sending_failed_count": coerce_int(row.get("sending_failed_count")),
+            "finalized_count": (
+                coerce_int(row.get("delivered_count"))
+                + coerce_int(row.get("delivery_failed_count"))
+                + coerce_int(row.get("sending_failed_count"))
+            ),
+            "total_count": coerce_int(row.get("total_remote") or row.get("total_accepted")),
+            "total_cost": coerce_float(row.get("provider_cost")) or 0.0,
+            "delivery_rate": coerce_float(row.get("delivery_rate")),
+            "error_code_counts": {},
+            "raw": {},
+        }
+
+    row["provider_cost"] = coerce_float(row.get("provider_cost")) or 0.0
+    row["delivery_rate"] = coerce_float(row.get("delivery_rate"))
+    row["status_summary"] = status_summary
+    row["messages_preview"] = messages_preview or []
+    row["sync_error"] = sync_error or ""
+    return row
+
+
+def get_ringcentral_batch_row(db, batch_id):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM ringcentral_batches WHERE id=%s", (batch_id,))
+    row = cur.fetchone()
+    cur.close()
+    return row
+
+
+def sync_ringcentral_batch(db, batch_id, include_messages=False):
+    row = get_ringcentral_batch_row(db, batch_id)
+    if not row:
+        return None
+
+    provider_batch = normalize_ringcentral_batch_payload(ringcentral_get_batch(row["provider_batch_id"]))
+    status_summary = summarize_ringcentral_statuses(ringcentral_get_batch_statuses(row["provider_batch_id"]))
+    messages_preview = ringcentral_list_batch_messages(row["provider_batch_id"], per_page=40) if include_messages else []
+    synced_at = utcnow_iso()
+
+    completed_at = None
+    if provider_batch["provider_status"].lower() == "completed":
+        completed_at = provider_batch["updated_at"] or synced_at
+
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE ringcentral_batches
+        SET
+            provider_status = %s,
+            from_number = COALESCE(NULLIF(%s, ''), from_number),
+            total_remote = %s,
+            total_processed = %s,
+            queued_count = %s,
+            sent_count = %s,
+            delivered_count = %s,
+            delivery_failed_count = %s,
+            sending_failed_count = %s,
+            provider_cost = %s,
+            delivery_rate = %s,
+            completed_at = CASE
+                WHEN %s IS NOT NULL THEN COALESCE(completed_at, %s)
+                ELSE completed_at
+            END,
+            last_synced_at = %s,
+            last_error = '',
+            latest_payload = %s
+        WHERE id = %s
+        """,
+        (
+            provider_batch["provider_status"],
+            provider_batch["from_number"],
+            provider_batch["batch_size"] or status_summary["total_count"],
+            provider_batch["processed_count"],
+            status_summary["queued_count"],
+            status_summary["sent_count"],
+            status_summary["delivered_count"],
+            status_summary["delivery_failed_count"],
+            status_summary["sending_failed_count"],
+            status_summary["total_cost"],
+            status_summary["delivery_rate"],
+            completed_at,
+            completed_at,
+            synced_at,
+            json.dumps({"batch": provider_batch["raw"], "statuses": status_summary["raw"]}),
+            batch_id,
+        )
+    )
+    cur.close()
+
+    refreshed_row = get_ringcentral_batch_row(db, batch_id)
+    return build_ringcentral_batch_response(refreshed_row, status_summary=status_summary, messages_preview=messages_preview)
+
+
 @app.before_request
 def require_login():
     if not AUTH_ENABLED:
@@ -1296,7 +1506,7 @@ def require_login():
     if request.endpoint in {"login", "logout", "static"}:
         return None
 
-    if request.path == "/webhook/telnyx":
+    if request.path in {"/webhook/telnyx", "/webhook/ringcentral"}:
         return None
 
     if session.get("authenticated"):
@@ -1422,6 +1632,34 @@ def init_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ringcentral_batches (
+                id                    SERIAL PRIMARY KEY,
+                provider_batch_id     TEXT UNIQUE NOT NULL,
+                name                  TEXT NOT NULL,
+                body                  TEXT NOT NULL,
+                from_number           TEXT NOT NULL,
+                total_requested       INTEGER DEFAULT 0,
+                total_accepted        INTEGER DEFAULT 0,
+                total_rejected        INTEGER DEFAULT 0,
+                total_remote          INTEGER DEFAULT 0,
+                total_processed       INTEGER DEFAULT 0,
+                provider_status       TEXT DEFAULT '',
+                queued_count          INTEGER DEFAULT 0,
+                sent_count            INTEGER DEFAULT 0,
+                delivered_count       INTEGER DEFAULT 0,
+                delivery_failed_count INTEGER DEFAULT 0,
+                sending_failed_count  INTEGER DEFAULT 0,
+                provider_cost         NUMERIC(12, 6) DEFAULT 0,
+                delivery_rate         NUMERIC(7, 2),
+                created_at            TEXT NOT NULL,
+                completed_at          TEXT,
+                last_synced_at        TEXT,
+                last_error            TEXT DEFAULT '',
+                latest_payload        TEXT DEFAULT '{}'
+            )
+        """)
+
         # Индекс для быстрого поиска по тексту
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_message_id TEXT")
         cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS cost_amount NUMERIC(12, 6)")
@@ -1469,6 +1707,23 @@ def init_db():
         cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_opt_status TEXT DEFAULT 'unknown'")
         cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_last_keyword TEXT DEFAULT ''")
         cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_opted_out_at TEXT")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_requested INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_accepted INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_rejected INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_remote INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_processed INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS provider_status TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS sent_count INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS delivered_count INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS delivery_failed_count INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS sending_failed_count INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS provider_cost NUMERIC(12, 6) DEFAULT 0")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS delivery_rate NUMERIC(7, 2)")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS completed_at TEXT")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS last_synced_at TEXT")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS latest_payload TEXT DEFAULT '{}'")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_body ON messages USING gin(to_tsvector('simple', body))")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact)")
@@ -1479,6 +1734,8 @@ def init_db():
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_provider_id ON broadcast_recipients(provider_message_id)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_phone_per_broadcast ON broadcast_recipients(broadcast_id, phone)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_number_lookup_cache_expires_at ON number_lookup_cache(expires_at)")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ringcentral_batches_provider_id ON ringcentral_batches(provider_batch_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ringcentral_batches_created_at ON ringcentral_batches(created_at)")
         cur.execute(
             """
             INSERT INTO app_state (key, value)
@@ -1861,6 +2118,278 @@ def api_broadcasts():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/ringcentral/config")
+def api_ringcentral_config():
+    summary = ringcentral_config_summary()
+    senders = []
+    senders_error = ""
+
+    if summary["enabled"]:
+        try:
+            senders = ringcentral_list_a2p_senders()
+        except RingCentralApiError as exc:
+            senders_error = exc.message
+
+    return jsonify({
+        "ok": True,
+        "config": summary,
+        "senders": senders,
+        "senders_error": senders_error,
+        "webhook_path": "/webhook/ringcentral",
+        "recommended_scopes": ["ReadAccounts", "ReadMessages", "SMS", "SubscriptionWebhook"],
+        "docs": {
+            "jwt_flow": "https://developers.ringcentral.com/guide/authentication/jwt-flow",
+            "high_volume": "https://developers.ringcentral.com/guide/messaging/sms/high-volume",
+            "sending": "https://developers.ringcentral.com/guide/messaging/sms/high-volume/sending-highvolume-sms",
+            "message_store": "https://developers.ringcentral.com/guide/messaging/sms/high-volume/message-store",
+            "webhooks": "https://developers.ringcentral.com/guide/notifications/webhooks/creating-webhooks",
+        },
+    })
+
+
+@app.route("/api/ringcentral/broadcasts")
+def api_ringcentral_broadcasts():
+    db = get_db()
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM ringcentral_batches ORDER BY created_at DESC LIMIT 20")
+    rows = cur.fetchall()
+    cur.close()
+    return jsonify([build_ringcentral_batch_response(row) for row in rows])
+
+
+@app.route("/api/ringcentral/broadcast", methods=["POST"])
+def api_ringcentral_broadcast():
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    name = (body.get("name") or "RingCentral Broadcast").strip() or "RingCentral Broadcast"
+    from_number = (body.get("from") or "").strip()
+    numbers_raw = body.get("numbers")
+    if numbers_raw is None:
+        numbers_raw = parse_ringcentral_numbers_input(body.get("numbers_text", ""))
+
+    if not text:
+        return jsonify({"ok": False, "error": "Message text is required"}), 400
+
+    if not from_number:
+        return jsonify({"ok": False, "error": "Sender number is required"}), 400
+
+    normalized = ringcentral_normalize_recipients(numbers_raw, DEFAULT_COUNTRY_CODE)
+    accepted_numbers = normalized["accepted_numbers"]
+
+    if not accepted_numbers:
+        return jsonify({
+            "ok": False,
+            "error": "No valid recipient numbers after normalization",
+            "normalization": normalized,
+        }), 400
+
+    try:
+        provider_batch_raw = ringcentral_create_batch(from_number, text, accepted_numbers)
+    except RingCentralApiError as exc:
+        return jsonify({
+            "ok": False,
+            "error": exc.message,
+            "details": exc.response_data,
+            "normalization": normalized,
+        }), exc.status_code or 400
+
+    provider_batch = normalize_ringcentral_batch_payload(provider_batch_raw)
+    status_summary = {
+        "items": [],
+        "queued_count": 0,
+        "sent_count": 0,
+        "delivered_count": 0,
+        "delivery_failed_count": 0,
+        "sending_failed_count": 0,
+        "finalized_count": 0,
+        "total_count": provider_batch["batch_size"] or len(accepted_numbers),
+        "total_cost": 0.0,
+        "delivery_rate": None,
+        "error_code_counts": {},
+        "raw": {},
+    }
+
+    try:
+        status_summary = summarize_ringcentral_statuses(ringcentral_get_batch_statuses(provider_batch["provider_batch_id"]))
+    except RingCentralApiError:
+        pass
+
+    now_iso = utcnow_iso()
+    db = get_db()
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        INSERT INTO ringcentral_batches (
+            provider_batch_id,
+            name,
+            body,
+            from_number,
+            total_requested,
+            total_accepted,
+            total_rejected,
+            total_remote,
+            total_processed,
+            provider_status,
+            queued_count,
+            sent_count,
+            delivered_count,
+            delivery_failed_count,
+            sending_failed_count,
+            provider_cost,
+            delivery_rate,
+            created_at,
+            completed_at,
+            last_synced_at,
+            latest_payload
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            provider_batch["provider_batch_id"],
+            name,
+            text,
+            from_number,
+            normalized["submitted_count"],
+            normalized["accepted_count"],
+            normalized["rejected_count"],
+            provider_batch["batch_size"] or status_summary["total_count"] or normalized["accepted_count"],
+            provider_batch["processed_count"],
+            provider_batch["provider_status"],
+            status_summary["queued_count"],
+            status_summary["sent_count"],
+            status_summary["delivered_count"],
+            status_summary["delivery_failed_count"],
+            status_summary["sending_failed_count"],
+            status_summary["total_cost"],
+            status_summary["delivery_rate"],
+            provider_batch["created_at"] or now_iso,
+            provider_batch["updated_at"] if provider_batch["provider_status"].lower() == "completed" else None,
+            now_iso,
+            json.dumps({"batch": provider_batch["raw"], "statuses": status_summary["raw"]}),
+        )
+    )
+    row = cur.fetchone()
+    cur.close()
+    db.commit()
+
+    return jsonify({
+        "ok": True,
+        "batch": build_ringcentral_batch_response(row, status_summary=status_summary),
+        "normalization": normalized,
+    })
+
+
+@app.route("/api/ringcentral/batch/<int:batch_id>")
+def api_ringcentral_batch(batch_id):
+    db = get_db()
+    row = get_ringcentral_batch_row(db, batch_id)
+    if not row:
+        return jsonify({"ok": False, "error": "Batch not found"}), 404
+
+    try:
+        payload = sync_ringcentral_batch(db, batch_id, include_messages=True)
+        db.commit()
+        return jsonify({"ok": True, "batch": payload})
+    except RingCentralApiError as exc:
+        cur = db.cursor()
+        cur.execute(
+            "UPDATE ringcentral_batches SET last_error=%s, last_synced_at=%s WHERE id=%s",
+            (exc.message, utcnow_iso(), batch_id)
+        )
+        cur.close()
+        db.commit()
+        stale_row = get_ringcentral_batch_row(db, batch_id)
+        return jsonify({
+            "ok": True,
+            "batch": build_ringcentral_batch_response(stale_row, sync_error=exc.message),
+        })
+
+
+@app.route("/api/ringcentral/subscription", methods=["POST"])
+def api_ringcentral_subscription():
+    body = request.get_json(silent=True) or {}
+    webhook_url = (body.get("webhook_url") or "").strip()
+    from_number = (body.get("from") or body.get("from_number") or "").strip()
+
+    if not webhook_url.startswith("https://"):
+        return jsonify({"ok": False, "error": "Webhook URL must start with https://"}), 400
+
+    try:
+        subscription = ringcentral_create_webhook_subscription(webhook_url, from_number)
+    except RingCentralApiError as exc:
+        return jsonify({"ok": False, "error": exc.message, "details": exc.response_data}), exc.status_code or 400
+
+    return jsonify({"ok": True, "subscription": subscription})
+
+
+@app.route("/webhook/ringcentral", methods=["GET", "POST"])
+def ringcentral_webhook():
+    validation_token = request.headers.get("Validation-Token", "")
+    response = jsonify({"ok": True})
+    if validation_token:
+        response.headers["Validation-Token"] = validation_token
+
+    if request.method != "POST":
+        return response, 200
+
+    payload = request.get_json(silent=True) or {}
+    event_name = payload.get("event", "")
+    body = payload.get("body") or {}
+    provider_batch_id = str(body.get("id") or body.get("batchId") or body.get("batch", {}).get("id") or "")
+
+    if provider_batch_id:
+        batch_payload = normalize_ringcentral_batch_payload(body if "/a2p-sms/batches" in event_name else {})
+        db = get_db()
+        cur = db.cursor()
+        cur.execute(
+            """
+            UPDATE ringcentral_batches
+            SET
+                provider_status = CASE
+                    WHEN %s <> '' THEN %s
+                    ELSE provider_status
+                END,
+                total_remote = CASE
+                    WHEN %s > 0 THEN %s
+                    ELSE total_remote
+                END,
+                total_processed = CASE
+                    WHEN %s > 0 THEN %s
+                    ELSE total_processed
+                END,
+                completed_at = CASE
+                    WHEN %s = 'completed' THEN COALESCE(completed_at, %s)
+                    ELSE completed_at
+                END,
+                last_synced_at = %s,
+                latest_payload = CASE
+                    WHEN %s <> '{}' THEN %s
+                    ELSE latest_payload
+                END
+            WHERE provider_batch_id = %s
+            """,
+            (
+                batch_payload["provider_status"],
+                batch_payload["provider_status"],
+                batch_payload["batch_size"],
+                batch_payload["batch_size"],
+                batch_payload["processed_count"],
+                batch_payload["processed_count"],
+                batch_payload["provider_status"].lower(),
+                batch_payload["updated_at"] or utcnow_iso(),
+                utcnow_iso(),
+                json.dumps(payload),
+                json.dumps(payload),
+                provider_batch_id,
+            )
+        )
+        cur.close()
+        db.commit()
+
+    return response, 200
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if not AUTH_ENABLED:
@@ -1895,6 +2424,11 @@ def logout():
 # ═══════════════════════════════════════════════════════
 #  UI
 # ═══════════════════════════════════════════════════════
+
+@app.route("/ringcentral")
+def ringcentral_index():
+    return render_template("ringcentral.html", auth_enabled=AUTH_ENABLED)
+
 
 @app.route("/")
 def index():

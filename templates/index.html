@@ -100,6 +100,10 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .tab-icon{font-size:12px}
 .tbadge{background:var(--red);color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:14px;text-align:center}
 .tbadge.hidden{visibility:hidden}
+.contact-tools{padding:8px 12px;border-bottom:1px solid var(--b);display:flex;justify-content:flex-end}
+.contact-filter-btn{padding:6px 9px;border-radius:7px;border:1px solid var(--b);background:var(--s2);color:var(--td);cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.05em;text-transform:uppercase;transition:all .15s}
+.contact-filter-btn:hover{border-color:var(--red);color:var(--red)}
+.contact-filter-btn.active{border-color:rgba(255,79,106,.28);color:var(--red);background:rgba(255,79,106,.08)}
 
 #contacts-list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
 
@@ -439,6 +443,10 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
     <button class="tab" onclick="switchTab('broadcast',this)"><span class="tab-icon">📢</span><span>Рассылка</span></button>
   </div>
 
+  <div class="contact-tools">
+    <button class="contact-filter-btn" id="optout-toggle-btn" onclick="toggleOptedOutVisibility()">Скрыть STOP</button>
+  </div>
+
   <div id="contacts-list"></div>
 
   <div class="sb-footer" id="sb-footer">
@@ -692,6 +700,11 @@ let currentTags = [];
 let lastLookupSummary = null;
 let lastMsgIds = {};   // contact → max id seen
 let notifGranted = false;
+const HIDE_OPTOUT_STORAGE_KEY = 'hide_opted_out_contacts';
+let hideOptedOutContacts = false;
+try{
+  hideOptedOutContacts = localStorage.getItem(HIDE_OPTOUT_STORAGE_KEY) === '1';
+}catch(e){}
 
 // TAG COLORS
 const TAG_COLORS = [
@@ -729,10 +742,12 @@ function switchTab(tab, el){
     document.getElementById('empty-center').style.display='none';
     document.getElementById('sb-footer').style.display='none';
     document.getElementById('contact-search').closest('.sb-search').style.display='none';
+    document.querySelector('.contact-tools').style.display='none';
     loadBCHistory();
   } else {
     document.getElementById('sb-footer').style.display='';
     document.getElementById('contact-search').closest('.sb-search').style.display='';
+    document.querySelector('.contact-tools').style.display='';
     if(!currentContact){
       document.getElementById('empty-center').style.display='flex';
       document.getElementById('chat-view').style.display='none';
@@ -762,9 +777,55 @@ async function loadContacts(){
       }
     });
     contacts = newContacts;
+    updateOptedOutToggleBtn();
     updateUnreadBadge();
     renderContacts();
   }catch(e){}
+}
+
+function isOptedOutContact(contact){
+  return contact?.sms_opt_status === 'opted_out';
+}
+
+function contactPriority(contact){
+  const unread = Number(contact?.unread||0) > 0;
+  const twoway = Number(contact?.outbound_after_first_inbound_count||0) > 0;
+  const inbound = Number(contact?.inbound_count||0) > 0;
+  if(isOptedOutContact(contact)) return 4;
+  if(unread) return 0;
+  if(inbound && !twoway) return 1;
+  if(twoway) return 2;
+  return 3;
+}
+
+function sortContactsForList(items){
+  return [...items].sort((a,b)=>{
+    const pa = contactPriority(a);
+    const pb = contactPriority(b);
+    if(pa!==pb) return pa-pb;
+    const ta = Date.parse(a.last_at||'') || 0;
+    const tb = Date.parse(b.last_at||'') || 0;
+    if(ta!==tb) return tb-ta;
+    return String(a.name||a.contact||'').localeCompare(String(b.name||b.contact||''));
+  });
+}
+
+function updateOptedOutToggleBtn(){
+  const btn = document.getElementById('optout-toggle-btn');
+  if(!btn) return;
+  const count = contacts.filter(isOptedOutContact).length;
+  btn.textContent = `${hideOptedOutContacts?'Показать':'Скрыть'} STOP${count?` (${count})`:''}`;
+  btn.classList.toggle('active', hideOptedOutContacts);
+}
+
+function toggleOptedOutVisibility(){
+  hideOptedOutContacts = !hideOptedOutContacts;
+  try{
+    localStorage.setItem(HIDE_OPTOUT_STORAGE_KEY, hideOptedOutContacts ? '1' : '0');
+  }catch(e){}
+  updateOptedOutToggleBtn();
+  updateUnreadBadge();
+  renderContacts();
 }
 
 function renderContacts(){
@@ -773,9 +834,11 @@ function renderContacts(){
   if(currentTab==='broadcast'){el.innerHTML='';return;}
 
   let list = contacts;
+  if(hideOptedOutContacts) list = list.filter(c=>!isOptedOutContact(c));
   if(currentTab==='active') list = list.filter(c=>Number(c.outbound_after_first_inbound_count||0)>0);
   else if(currentTab==='unread') list = list.filter(c=>c.unread>0);
   if(q) list = list.filter(c=>c.contact.includes(q)||(c.name||'').toLowerCase().includes(q));
+  list = sortContactsForList(list);
 
   if(!list.length){
     el.innerHTML=`<div class="empty-sb">${currentTab==='active'?'Нет двусторонних':currentTab==='unread'?'Всё прочитано':'Нет переписок'}</div>`;
@@ -814,7 +877,8 @@ function renderChatFlags(contact){
 }
 
 function updateUnreadBadge(){
-  const n = contacts.reduce((s,c)=>s+(c.unread||0),0);
+  const visibleContacts = hideOptedOutContacts ? contacts.filter(c=>!isOptedOutContact(c)) : contacts;
+  const n = visibleContacts.reduce((s,c)=>s+(c.unread||0),0);
   const b = document.getElementById('ubadge');
   b.textContent=n; b.classList.toggle('hidden',n===0);
 }

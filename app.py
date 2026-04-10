@@ -1833,6 +1833,85 @@ def close_connection(exception):
         db.close()
 
 
+def coerce_sender_number(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = normalize_phone_number(text, DEFAULT_COUNTRY_CODE)
+    return normalized or text
+
+
+def request_sender_number(arg_name="my_number"):
+    return coerce_sender_number(request.args.get(arg_name, ""))
+
+
+def list_sender_profiles(conn):
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        WITH discovered_numbers AS (
+            SELECT DISTINCT my_number AS phone
+            FROM messages
+            WHERE COALESCE(my_number, '') <> ''
+            UNION
+            SELECT DISTINCT from_number AS phone
+            FROM broadcasts
+            WHERE COALESCE(from_number, '') <> ''
+            UNION
+            SELECT %s AS phone
+        )
+        SELECT
+            sp.id,
+            COALESCE(sp.name, dn.phone) AS name,
+            COALESCE(sp.city, '') AS city,
+            dn.phone,
+            COALESCE(sp.created_at, '') AS created_at,
+            COALESCE(sp.updated_at, '') AS updated_at
+        FROM discovered_numbers dn
+        LEFT JOIN sender_profiles sp
+          ON sp.phone = dn.phone
+         AND sp.archived = FALSE
+        ORDER BY
+            CASE WHEN dn.phone = %s THEN 0 ELSE 1 END,
+            LOWER(COALESCE(sp.name, dn.phone, '')),
+            LOWER(COALESCE(sp.city, '')),
+            dn.phone
+        """,
+        (MY_NUMBER, MY_NUMBER)
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    cur.close()
+    return rows
+
+
+def upsert_sender_profile(conn, name, city, phone):
+    normalized_phone = coerce_sender_number(phone)
+    if not normalized_phone:
+        raise ValueError("Phone number is required")
+
+    profile_name = str(name or "").strip() or normalized_phone
+    profile_city = str(city or "").strip()
+    now_iso = utcnow_iso()
+
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        INSERT INTO sender_profiles (name, city, phone, archived, created_at, updated_at)
+        VALUES (%s,%s,%s,FALSE,%s,%s)
+        ON CONFLICT (phone) DO UPDATE SET
+            name = EXCLUDED.name,
+            city = EXCLUDED.city,
+            archived = FALSE,
+            updated_at = EXCLUDED.updated_at
+        RETURNING id, name, city, phone, created_at, updated_at
+        """,
+        (profile_name, profile_city, normalized_phone, now_iso, now_iso)
+    )
+    row = dict(cur.fetchone())
+    cur.close()
+    return row
+
+
 def init_db():
     with app.app_context():
         db = get_db()
@@ -1925,6 +2004,18 @@ def init_db():
                 sms_opt_status TEXT DEFAULT 'unknown',
                 sms_last_keyword TEXT DEFAULT '',
                 sms_opted_out_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sender_profiles (
+                id         SERIAL PRIMARY KEY,
+                name       TEXT NOT NULL,
+                city       TEXT DEFAULT '',
+                phone      TEXT UNIQUE NOT NULL,
+                archived   BOOLEAN DEFAULT FALSE,
+                created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
@@ -2054,11 +2145,13 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_provider_id ON messages(provider_message_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_broadcast_id ON messages(broadcast_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_my_number ON messages(my_number)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_id ON broadcast_recipients(broadcast_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status ON broadcast_recipients(status)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_provider_id ON broadcast_recipients(provider_message_id)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_phone_per_broadcast ON broadcast_recipients(broadcast_id, phone)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_number_lookup_cache_expires_at ON number_lookup_cache(expires_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sender_profiles_archived ON sender_profiles(archived)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ringcentral_batches_provider_id ON ringcentral_batches(provider_batch_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ringcentral_batches_created_at ON ringcentral_batches(created_at)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ringcentral_sms_provider_id ON ringcentral_sms_messages(provider_message_id)")
@@ -2072,6 +2165,8 @@ def init_db():
             """,
             (utcnow_iso(),)
         )
+
+        upsert_sender_profile(db, "Default", "", MY_NUMBER)
 
         db.commit()
         cur.close()
@@ -2123,6 +2218,7 @@ def telnyx_webhook():
 @app.route("/api/contacts")
 def api_contacts():
     db = get_db()
+    sender_number = request_sender_number()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("""
         WITH contact_rollup AS (
@@ -2140,6 +2236,7 @@ def api_contacts():
                 COALESCE(c.sms_opt_status, 'unknown') AS sms_opt_status
             FROM messages m
             LEFT JOIN contacts c ON c.phone = m.contact
+            WHERE (%s = '' OR m.my_number = %s)
             GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status
         )
         SELECT
@@ -2159,13 +2256,14 @@ def api_contacts():
                     SELECT COUNT(*)::int
                     FROM messages mo
                     WHERE mo.contact = cr.contact
+                      AND mo.my_number = cr.my_number
                       AND mo.direction = 'outbound'
                       AND mo.created_at > cr.first_inbound_at
                 )
             END AS outbound_after_first_inbound_count
         FROM contact_rollup cr
         ORDER BY cr.last_at DESC
-    """)
+    """, (sender_number, sender_number))
     rows = cur.fetchall()
     cur.close()
     return jsonify([dict(r) for r in rows])
@@ -2174,10 +2272,17 @@ def api_contacts():
 @app.route("/api/messages/<contact>")
 def api_messages(contact):
     db = get_db()
+    sender_number = request_sender_number()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        "SELECT * FROM messages WHERE contact=%s ORDER BY created_at ASC",
-        (contact,)
+        """
+        SELECT *
+        FROM messages
+        WHERE contact = %s
+          AND (%s = '' OR my_number = %s)
+        ORDER BY created_at ASC
+        """,
+        (contact, sender_number, sender_number)
     )
     rows = cur.fetchall()
     cur.close()
@@ -2191,6 +2296,7 @@ def api_messages(contact):
 @app.route("/api/contact/<path:phone>", methods=["GET"])
 def api_contact_get(phone):
     db = get_db()
+    sender_number = request_sender_number()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     cur.execute("SELECT * FROM contacts WHERE phone=%s", (phone,))
@@ -2203,8 +2309,10 @@ def api_contact_get(phone):
             SUM(CASE WHEN direction='inbound'  THEN 1 ELSE 0 END) AS received,
             MIN(created_at) AS first_msg,
             MAX(created_at) AS last_msg
-        FROM messages WHERE contact=%s
-    """, (phone,))
+        FROM messages
+        WHERE contact = %s
+          AND (%s = '' OR my_number = %s)
+    """, (phone, sender_number, sender_number))
     stats = cur.fetchone()
     cur.close()
 
@@ -2250,10 +2358,18 @@ def api_search():
     if len(q) < 2:
         return jsonify([])
     db = get_db()
+    sender_number = request_sender_number()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        "SELECT * FROM messages WHERE body ILIKE %s ORDER BY created_at DESC LIMIT 40",
-        (f"%{q}%",)
+        """
+        SELECT *
+        FROM messages
+        WHERE body ILIKE %s
+          AND (%s = '' OR my_number = %s)
+        ORDER BY created_at DESC
+        LIMIT 40
+        """,
+        (f"%{q}%", sender_number, sender_number)
     )
     rows = cur.fetchall()
     cur.close()
@@ -2267,22 +2383,56 @@ def api_search():
 @app.route("/api/stats")
 def api_stats():
     db  = get_db()
+    sender_number = request_sender_number()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
-    cur.execute("SELECT COUNT(DISTINCT contact) AS v FROM messages")
+    cur.execute(
+        "SELECT COUNT(DISTINCT contact) AS v FROM messages WHERE (%s = '' OR my_number = %s)",
+        (sender_number, sender_number)
+    )
     total_contacts = cur.fetchone()["v"]
 
-    cur.execute("SELECT COUNT(*) AS v FROM messages WHERE direction='outbound' AND created_at LIKE %s", (f"{today}%",))
+    cur.execute(
+        """
+        SELECT COUNT(*) AS v
+        FROM messages
+        WHERE direction='outbound'
+          AND created_at LIKE %s
+          AND (%s = '' OR my_number = %s)
+        """,
+        (f"{today}%", sender_number, sender_number)
+    )
     today_sent = cur.fetchone()["v"]
 
-    cur.execute("SELECT COUNT(*) AS v FROM messages WHERE direction='inbound' AND created_at LIKE %s", (f"{today}%",))
+    cur.execute(
+        """
+        SELECT COUNT(*) AS v
+        FROM messages
+        WHERE direction='inbound'
+          AND created_at LIKE %s
+          AND (%s = '' OR my_number = %s)
+        """,
+        (f"{today}%", sender_number, sender_number)
+    )
     today_recv = cur.fetchone()["v"]
 
-    cur.execute("SELECT COUNT(*) AS v FROM messages WHERE direction='inbound' AND status='received'")
+    cur.execute(
+        """
+        SELECT COUNT(*) AS v
+        FROM messages
+        WHERE direction='inbound'
+          AND status='received'
+          AND (%s = '' OR my_number = %s)
+        """,
+        (sender_number, sender_number)
+    )
     unread = cur.fetchone()["v"]
 
-    cur.execute("SELECT COUNT(*) AS v FROM messages")
+    cur.execute(
+        "SELECT COUNT(*) AS v FROM messages WHERE (%s = '' OR my_number = %s)",
+        (sender_number, sender_number)
+    )
     total_msgs = cur.fetchone()["v"]
 
     cur.close()
@@ -2307,6 +2457,38 @@ def api_number_lookup():
     lookup = evaluate_numbers_for_sms(db, numbers_raw)
     db.commit()
     return jsonify({"ok": True, "lookup": lookup})
+
+
+@app.route("/api/sender-profiles")
+def api_sender_profiles():
+    db = get_db()
+    return jsonify({
+        "ok": True,
+        "default_number": MY_NUMBER,
+        "profiles": list_sender_profiles(db),
+    })
+
+
+@app.route("/api/sender-profiles", methods=["POST"])
+def api_sender_profiles_save():
+    body = request.get_json(silent=True) or {}
+    name = body.get("name", "")
+    city = body.get("city", "")
+    phone = body.get("phone", "")
+
+    db = get_db()
+    try:
+        profile = upsert_sender_profile(db, name, city, phone)
+    except ValueError as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db.commit()
+    return jsonify({
+        "ok": True,
+        "profile": profile,
+        "profiles": list_sender_profiles(db),
+    })
 
 
 # ═══════════════════════════════════════════════════════
@@ -2457,15 +2639,34 @@ def api_broadcast_status(bid):
 @app.route("/api/broadcasts")
 def api_broadcasts():
     db = get_db()
+    sender_number = coerce_sender_number(request.args.get("from_number") or request.args.get("my_number"))
     cur = db.cursor()
-    cur.execute("SELECT id FROM broadcasts ORDER BY created_at DESC LIMIT 20")
+    cur.execute(
+        """
+        SELECT id
+        FROM broadcasts
+        WHERE (%s = '' OR from_number = %s)
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+        (sender_number, sender_number)
+    )
     broadcast_ids = [row[0] for row in cur.fetchall()]
     cur.close()
     for broadcast_id in broadcast_ids:
         refresh_broadcast_stats(db, broadcast_id)
     db.commit()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM broadcasts ORDER BY created_at DESC LIMIT 20")
+    cur.execute(
+        """
+        SELECT *
+        FROM broadcasts
+        WHERE (%s = '' OR from_number = %s)
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+        (sender_number, sender_number)
+    )
     rows = cur.fetchall()
     cur.close()
     return jsonify([dict(r) for r in rows])

@@ -59,6 +59,21 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .brand-name{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--td)}
 .brand-r{display:flex;align-items:center;gap:8px}
 .my-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--a);background:var(--adim);border:1px solid rgba(79,255,176,.18);padding:3px 8px;border-radius:6px;letter-spacing:.02em}
+.sender-wrap{display:flex;align-items:center;gap:6px}
+.sender-select{
+  max-width:220px;height:30px;border-radius:7px;border:1px solid var(--b);
+  background:var(--s2);color:var(--a);padding:0 10px;
+  font-family:'IBM Plex Mono',monospace;font-size:10px;outline:none;
+}
+.sender-select:focus{border-color:var(--a)}
+.brand-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:28px;height:28px;padding:0 9px;border-radius:7px;
+  border:1px solid rgba(79,255,176,.2);background:rgba(79,255,176,.08);color:var(--a);
+  cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.05em;
+  transition:all .15s;
+}
+.brand-btn:hover{background:rgba(79,255,176,.16)}
 .logout-link{
   display:inline-flex;align-items:center;justify-content:center;
   min-width:28px;height:28px;padding:0 8px;border-radius:7px;
@@ -393,10 +408,18 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .modal{background:var(--s1);border:1px solid var(--b2);border-radius:14px;padding:24px;width:320px;box-shadow:0 24px 60px rgba(0,0,0,.6);animation:mIn .18s ease-out}
 @keyframes mIn{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:none}}
 .modal h3{font-size:14px;font-weight:600;margin-bottom:16px}
+.modal.profile-modal{width:420px;max-width:92vw}
 .ml{display:block;font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:var(--td);margin-bottom:4px;font-family:'IBM Plex Mono',monospace}
 .mi{width:100%;background:var(--s2);border:1px solid var(--b);border-radius:7px;padding:8px 10px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--t);outline:none;margin-bottom:12px;transition:border-color .2s}
 .mi:focus{border-color:var(--a)}
 .mact{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+.profile-list{display:flex;flex-direction:column;gap:8px;max-height:180px;overflow:auto;margin-bottom:14px}
+.profile-item{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 11px;border-radius:9px;border:1px solid var(--b);background:var(--s2)}
+.profile-item.active{border-color:rgba(79,255,176,.28);background:rgba(79,255,176,.08)}
+.profile-main{min-width:0;flex:1}
+.profile-name{font-size:12px;font-weight:600;color:var(--t)}
+.profile-meta{margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);line-height:1.4}
+.profile-empty{padding:14px;border:1px dashed var(--b);border-radius:9px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tm);text-align:center;margin-bottom:14px}
 .btn{padding:8px 16px;border-radius:7px;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.04em;transition:all .15s}
 .btn-ghost{background:transparent;border:1px solid var(--b);color:var(--td)}
 .btn-ghost:hover{border-color:var(--b2);color:var(--t)}
@@ -424,7 +447,10 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
       <span class="brand-name">SMS Panel</span>
     </div>
     <div class="brand-r">
-      <span class="my-chip">{{ my_number }}</span>
+      <div class="sender-wrap">
+        <select id="sender-select" class="sender-select" onchange="handleSenderChange(this.value)"></select>
+        <button class="brand-btn" onclick="openSenderModal()">profiles</button>
+      </div>
       {% if auth_enabled %}
       <a class="logout-link" href="/logout" title="Выйти">exit</a>
       {% endif %}
@@ -684,6 +710,24 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
   </div>
 </div>
 
+<div class="modal-ov" id="sender-modal">
+  <div class="modal profile-modal">
+    <h3>Sender Profiles</h3>
+    <div id="sender-profile-list" class="profile-list"></div>
+    <div class="profile-empty" id="sender-profile-empty" style="display:none">Добавьте первый профиль для нового города.</div>
+    <label class="ml">Название профиля</label>
+    <input class="mi" id="sp-name" placeholder="Chicago Service">
+    <label class="ml">Город</label>
+    <input class="mi" id="sp-city" placeholder="Chicago, IL">
+    <label class="ml">Номер</label>
+    <input class="mi" id="sp-phone" placeholder="+13125550123" type="tel">
+    <div class="mact">
+      <button class="btn btn-ghost" onclick="closeSenderModal()">Закрыть</button>
+      <button class="btn btn-prim" onclick="saveSenderProfile()">Сохранить профиль</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -700,9 +744,14 @@ let currentTags = [];
 let lastLookupSummary = null;
 let lastMsgIds = {};   // contact → max id seen
 let notifGranted = false;
+let senderProfiles = [];
+let currentSender = MY_NUMBER;
+let currentChatMyNumber = MY_NUMBER;
+const ACTIVE_SENDER_STORAGE_KEY = 'active_sender_number';
 const HIDE_OPTOUT_STORAGE_KEY = 'hide_opted_out_contacts';
 let hideOptedOutContacts = false;
 try{
+  currentSender = localStorage.getItem(ACTIVE_SENDER_STORAGE_KEY) || MY_NUMBER;
   hideOptedOutContacts = localStorage.getItem(HIDE_OPTOUT_STORAGE_KEY) === '1';
 }catch(e){}
 
@@ -756,10 +805,187 @@ function switchTab(tab, el){
   renderContacts();
 }
 
+function buildApiUrl(path, params={}){
+  const url = new URL(path, window.location.origin);
+  Object.entries(params).forEach(([key, value])=>{
+    if(value!==undefined && value!==null && String(value).trim()!==''){
+      url.searchParams.set(key, String(value).trim());
+    }
+  });
+  return url.pathname + url.search;
+}
+
+function getActiveSenderNumber(){
+  return String(currentSender || MY_NUMBER || '').trim();
+}
+
+function getCurrentChatSenderNumber(){
+  return String(currentChatMyNumber || currentSender || MY_NUMBER || '').trim();
+}
+
+function senderProfileLabel(profile){
+  const city = String(profile?.city || '').trim();
+  const name = String(profile?.name || '').trim();
+  const phone = String(profile?.phone || '').trim();
+  const base = city || name || phone || 'Sender';
+  return phone && phone !== base ? `${base} · ${phone}` : base;
+}
+
+function findSenderProfile(phone){
+  return senderProfiles.find(p=>p.phone===phone) || null;
+}
+
+function renderSenderSelect(){
+  const select = document.getElementById('sender-select');
+  if(!select) return;
+  const profiles = senderProfiles.length
+    ? senderProfiles
+    : [{name:'Default', city:'', phone:MY_NUMBER}];
+  select.innerHTML = profiles.map(p=>{
+    const label = senderProfileLabel(p);
+    return `<option value="${esc(p.phone)}">${esc(label)}</option>`;
+  }).join('');
+  if(!profiles.some(p=>p.phone===currentSender)){
+    currentSender = profiles[0]?.phone || MY_NUMBER;
+  }
+  select.value = currentSender;
+}
+
+function renderSenderProfileList(){
+  const list = document.getElementById('sender-profile-list');
+  const empty = document.getElementById('sender-profile-empty');
+  if(!list || !empty) return;
+  if(!senderProfiles.length){
+    list.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  list.innerHTML = senderProfiles.map(profile=>{
+    const active = profile.phone === currentSender;
+    return `<div class="profile-item${active?' active':''}">
+      <div class="profile-main">
+        <div class="profile-name">${esc(profile.name || profile.phone)}</div>
+        <div class="profile-meta">${esc(profile.city || 'No city')}<br>${esc(profile.phone)}</div>
+      </div>
+      <button class="brand-btn" onclick="selectSenderProfile('${esc(profile.phone)}')">${active?'active':'use'}</button>
+    </div>`;
+  }).join('');
+}
+
+function resetCurrentViewForSender(){
+  currentContact = null;
+  currentChatMyNumber = getActiveSenderNumber();
+  document.getElementById('panel-dash').classList.remove('hidden');
+  document.getElementById('panel-contact').classList.remove('visible');
+  document.getElementById('chat-view').style.display='none';
+  document.getElementById('empty-center').style.display='flex';
+  document.getElementById('chat-flags').innerHTML='';
+  clearInterval(bcPollTimer);
+}
+
+async function applySenderSelection(phone, {showToast=false}={}){
+  const nextPhone = String(phone || '').trim() || MY_NUMBER;
+  currentSender = nextPhone;
+  currentChatMyNumber = nextPhone;
+  try{
+    localStorage.setItem(ACTIVE_SENDER_STORAGE_KEY, currentSender);
+  }catch(e){}
+  renderSenderSelect();
+  renderSenderProfileList();
+  resetCurrentViewForSender();
+  await loadContacts();
+  await loadStats();
+  if(currentTab==='broadcast'){
+    await loadBCHistory();
+  }
+  if(showToast){
+    const profile = findSenderProfile(currentSender);
+    showToast(`Активный профиль: ${profile ? senderProfileLabel(profile) : currentSender}`,'ok');
+  }
+}
+
+async function handleSenderChange(phone){
+  await applySenderSelection(phone, {showToast:true});
+}
+
+function selectSenderProfile(phone){
+  applySenderSelection(phone, {showToast:true});
+  closeSenderModal();
+}
+
+function openSenderModal(){
+  renderSenderProfileList();
+  document.getElementById('sender-modal').classList.add('open');
+  document.getElementById('sp-name').focus();
+}
+
+function closeSenderModal(){
+  document.getElementById('sender-modal').classList.remove('open');
+}
+
+document.getElementById('sender-modal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeSenderModal();});
+
+async function loadSenderProfiles(){
+  try{
+    const payload = await (await fetch('/api/sender-profiles')).json();
+    if(!payload.ok) return;
+    senderProfiles = payload.profiles || [];
+    if(!senderProfiles.length){
+      senderProfiles = [{name:'Default', city:'', phone:payload.default_number || MY_NUMBER}];
+    }
+    if(!senderProfiles.some(p=>p.phone===currentSender)){
+      currentSender = senderProfiles[0]?.phone || payload.default_number || MY_NUMBER;
+    }
+    currentChatMyNumber = currentSender;
+    renderSenderSelect();
+    renderSenderProfileList();
+  }catch(e){
+    senderProfiles = [{name:'Default', city:'', phone:MY_NUMBER}];
+    currentSender = MY_NUMBER;
+    currentChatMyNumber = MY_NUMBER;
+    renderSenderSelect();
+    renderSenderProfileList();
+  }
+}
+
+async function saveSenderProfile(){
+  const name = document.getElementById('sp-name').value.trim();
+  const city = document.getElementById('sp-city').value.trim();
+  const rawPhone = document.getElementById('sp-phone').value.trim();
+  const phone = normalizeLocalNumber(rawPhone);
+  if(!phone){
+    showToast('Укажи номер в формате +1...','err');
+    return;
+  }
+  try{
+    const payload = await (await fetch('/api/sender-profiles',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,city,phone})
+    })).json();
+    if(!payload.ok){
+      showToast(`Ошибка: ${payload.error||'не удалось сохранить профиль'}`,'err');
+      return;
+    }
+    senderProfiles = payload.profiles || senderProfiles;
+    document.getElementById('sp-name').value = '';
+    document.getElementById('sp-city').value = '';
+    document.getElementById('sp-phone').value = '';
+    renderSenderSelect();
+    renderSenderProfileList();
+    await applySenderSelection(payload.profile?.phone || phone);
+    closeSenderModal();
+    showToast('Профиль сохранён','ok');
+  }catch(e){
+    showToast('Сетевая ошибка','err');
+  }
+}
+
 // ─── CONTACTS ───
 async function loadContacts(){
   try{
-    const r = await fetch('/api/contacts');
+    const r = await fetch(buildApiUrl('/api/contacts',{my_number:getActiveSenderNumber()}));
     const newContacts = await r.json();
     // Check for new inbound messages → notifications
     newContacts.forEach(c=>{
@@ -888,6 +1114,7 @@ document.getElementById('contact-search').addEventListener('input', renderContac
 // ─── CHAT ───
 async function openChat(contact, myNum){
   currentContact = contact;
+  currentChatMyNumber = String(myNum || getActiveSenderNumber()).trim() || MY_NUMBER;
   const c = contacts.find(x=>x.contact===contact)||{};
   const displayName = c.name||contact;
 
@@ -912,7 +1139,9 @@ async function openChat(contact, myNum){
 async function loadMsgs(){
   if(!currentContact) return;
   try{
-    const msgs = await (await fetch(`/api/messages/${encodeURIComponent(currentContact)}`)).json();
+    const msgs = await (await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(currentContact)}`,{
+      my_number:getCurrentChatSenderNumber()
+    }))).json();
     renderMsgs(msgs);
   }catch(e){}
 }
@@ -939,7 +1168,15 @@ async function sendMsg(){
   const btn = document.getElementById('send-btn');
   btn.disabled=true; inp.value=''; inp.style.height='';
   try{
-    const d = await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:currentContact,text,from:MY_NUMBER})})).json();
+    const d = await (await fetch('/api/send',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        to:currentContact,
+        text,
+        from:getCurrentChatSenderNumber()
+      })
+    })).json();
     if(d.ok){await loadMsgs();await loadContacts();}
     else showToast('Ошибка: '+(d.error||'?'),'err');
   }catch(e){showToast('Сетевая ошибка','err');}
@@ -958,7 +1195,9 @@ async function openContactPanel(phone){
   currentTags=[];
 
   try{
-    const d = await (await fetch(`/api/contact/${encodeURIComponent(phone)}`)).json();
+    const d = await (await fetch(buildApiUrl(`/api/contact/${encodeURIComponent(phone)}`,{
+      my_number:getCurrentChatSenderNumber()
+    }))).json();
     document.getElementById('cp-name').value    = d.name    || '';
     document.getElementById('cp-company').value = d.company || '';
     document.getElementById('cp-notes').value   = d.notes   || '';
@@ -984,6 +1223,7 @@ async function openContactPanel(phone){
 
 function collapseContact(){
   currentContact = null;
+  currentChatMyNumber = getActiveSenderNumber();
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';
@@ -1044,7 +1284,7 @@ async function saveContact(){
 // ─── STATS dashboard ───
 async function loadStats(){
   try{
-    const s = await (await fetch('/api/stats')).json();
+    const s = await (await fetch(buildApiUrl('/api/stats',{my_number:getActiveSenderNumber()}))).json();
     document.getElementById('st-contacts').textContent = s.total_contacts;
     document.getElementById('st-unread').textContent   = s.unread;
     document.getElementById('st-sent').textContent     = s.today_sent;
@@ -1063,13 +1303,17 @@ async function quickSend(){
   const text = document.getElementById('q-msg').value.trim();
   if(!to||!text){showToast('Заполни оба поля','err');return;}
   try{
-    const d = await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,text,from:MY_NUMBER})})).json();
+    const d = await (await fetch('/api/send',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({to,text,from:getActiveSenderNumber()})
+    })).json();
     if(d.ok){
       document.getElementById('q-num').value='';
       document.getElementById('q-msg').value='';
       showToast('Отправлено!','ok');
       await loadContacts();
-      await openChat(to, MY_NUMBER);
+      await openChat(to, getActiveSenderNumber());
     } else showToast('Ошибка: '+(d.error||'?'),'err');
   }catch(e){showToast('Сетевая ошибка','err');}
 }
@@ -1094,7 +1338,10 @@ function doSearch(q){
   if(q.length<2){document.getElementById('search-results').innerHTML='<div class="sr-empty">Минимум 2 символа</div>';return;}
   searchTimer = setTimeout(async()=>{
     try{
-      const res = await (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json();
+      const res = await (await fetch(buildApiUrl('/api/search',{
+        q,
+        my_number:getActiveSenderNumber()
+      }))).json();
       const el  = document.getElementById('search-results');
       if(!res.length){el.innerHTML='<div class="sr-empty">Ничего не найдено</div>';return;}
       const re  = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
@@ -1239,7 +1486,11 @@ async function startBroadcast(){
   document.getElementById('ps-cost').textContent='$0.00';
   resetBroadcastDiagnostics();
   try{
-    const resp=await fetch('/api/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,numbers:nums,text,from:MY_NUMBER})});
+    const resp=await fetch('/api/broadcast',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,numbers:nums,text,from:getActiveSenderNumber()})
+    });
     const d=await resp.json().catch(()=>null);
     if(!d){
       throw new Error(resp.status?`HTTP ${resp.status}`:'NETWORK');
@@ -1287,7 +1538,7 @@ function pollBC(id,total){
 }
 async function loadBCHistory(){
   try{
-    const list=await (await fetch('/api/broadcasts')).json();
+    const list=await (await fetch(buildApiUrl('/api/broadcasts',{from_number:getActiveSenderNumber()}))).json();
     const el=document.getElementById('bc-hist');
     if(!list.length){el.innerHTML='<div class="sr-empty">История пуста</div>';return;}
     el.innerHTML=list.map(b=>{
@@ -1324,8 +1575,8 @@ async function sendNew(){
   const text=document.getElementById('m-body').value.trim();
   if(!to||!text){showToast('Заполни все поля','err');return;}
   try{
-    const d=await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,text,from:MY_NUMBER})})).json();
-    if(d.ok){closeModal();showToast('Отправлено!','ok');await loadContacts();await openChat(to,MY_NUMBER);}
+    const d=await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,text,from:getActiveSenderNumber()})})).json();
+    if(d.ok){closeModal();showToast('Отправлено!','ok');await loadContacts();await openChat(to,getActiveSenderNumber());}
     else showToast('Ошибка: '+(d.error||'?'),'err');
   }catch(e){showToast('Сетевая ошибка','err');}
 }
@@ -1459,13 +1710,22 @@ function showToast(msg,type=''){
 }
 
 // ─── INIT ───
+async function initApp(){
+  await loadSenderProfiles();
+  updateOptedOutToggleBtn();
+  await loadContacts();
+  await loadStats();
+  if(currentTab==='broadcast'){
+    await loadBCHistory();
+  }
+  startPoll();
+}
+
 initNotifications();
 setDashDate();
 resetLookupSummary();
 resetBroadcastDiagnostics();
-loadContacts();
-loadStats();
-startPoll();
+initApp();
 
 // Обновляем статистику каждые 30 сек
 setInterval(loadStats, 30000);

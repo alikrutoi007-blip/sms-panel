@@ -2125,21 +2125,46 @@ def api_contacts():
     db = get_db()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("""
+        WITH contact_rollup AS (
+            SELECT
+                m.contact,
+                m.my_number,
+                MAX(m.created_at) AS last_at,
+                SUM(CASE WHEN m.direction='inbound'  THEN 1 ELSE 0 END)::int AS inbound_count,
+                SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END)::int AS outbound_count,
+                SUM(CASE WHEN m.direction='inbound' AND m.status='received' THEN 1 ELSE 0 END)::int AS unread,
+                MIN(CASE WHEN m.direction='inbound' THEN m.created_at END) AS first_inbound_at,
+                COALESCE(c.name,    '') AS name,
+                COALESCE(c.company, '') AS company,
+                COALESCE(c.tags,    '') AS tags,
+                COALESCE(c.sms_opt_status, 'unknown') AS sms_opt_status
+            FROM messages m
+            LEFT JOIN contacts c ON c.phone = m.contact
+            GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status
+        )
         SELECT
-            m.contact,
-            m.my_number,
-            MAX(m.created_at)  AS last_at,
-            SUM(CASE WHEN m.direction='inbound'  THEN 1 ELSE 0 END) AS inbound_count,
-            SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound_count,
-            SUM(CASE WHEN m.direction='inbound' AND m.status='received' THEN 1 ELSE 0 END) AS unread,
-            COALESCE(c.name,    '') AS name,
-            COALESCE(c.company, '') AS company,
-            COALESCE(c.tags,    '') AS tags,
-            COALESCE(c.sms_opt_status, 'unknown') AS sms_opt_status
-        FROM messages m
-        LEFT JOIN contacts c ON c.phone = m.contact
-        GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status
-        ORDER BY last_at DESC
+            cr.contact,
+            cr.my_number,
+            cr.last_at,
+            cr.inbound_count,
+            cr.outbound_count,
+            cr.unread,
+            cr.name,
+            cr.company,
+            cr.tags,
+            cr.sms_opt_status,
+            CASE
+                WHEN cr.first_inbound_at IS NULL THEN 0
+                ELSE (
+                    SELECT COUNT(*)::int
+                    FROM messages mo
+                    WHERE mo.contact = cr.contact
+                      AND mo.direction = 'outbound'
+                      AND mo.created_at > cr.first_inbound_at
+                )
+            END AS outbound_after_first_inbound_count
+        FROM contact_rollup cr
+        ORDER BY cr.last_at DESC
     """)
     rows = cur.fetchall()
     cur.close()

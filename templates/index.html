@@ -119,6 +119,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 }
 .av.unread::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--s1)}
 .av.twoway{border-color:var(--a);color:var(--a)}
+.av.opted-out{border-color:var(--red);color:var(--red);background:rgba(255,79,106,.08)}
 
 .ci{flex:1;min-width:0}
 .ci-name{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -129,6 +130,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .p-active{background:rgba(79,255,176,.12);color:var(--a)}
 .p-unread{background:rgba(255,79,106,.15);color:var(--red)}
 .p-out{background:var(--s3);color:var(--td)}
+.p-optout{background:rgba(255,79,106,.18);color:var(--red)}
 
 .empty-sb{padding:36px 20px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:var(--tm);text-transform:uppercase}
 
@@ -238,6 +240,9 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .chat-hdr-info{flex:1}
 .chat-hdr-name{font-size:13px;font-weight:600}
 .chat-hdr-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);margin-top:1px}
+.chat-flags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chat-flag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;border:1px solid var(--b);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.04em;color:var(--td);background:var(--s2)}
+.chat-flag.stop{border-color:rgba(255,79,106,.28);color:var(--red);background:rgba(255,79,106,.12)}
 .chat-live{display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--a)}
 .hd{width:6px;height:6px;border-radius:50%;background:var(--a);box-shadow:0 0 6px var(--aglow)}
 #msgs{flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:4px;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
@@ -540,6 +545,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
       <div class="chat-hdr-info">
         <div class="chat-hdr-name" id="chat-name"></div>
         <div class="chat-hdr-num" id="chat-num"></div>
+        <div class="chat-flags" id="chat-flags"></div>
       </div>
       <div class="chat-live"><div class="hd"></div><span>live</span></div>
     </div>
@@ -767,7 +773,7 @@ function renderContacts(){
   if(currentTab==='broadcast'){el.innerHTML='';return;}
 
   let list = contacts;
-  if(currentTab==='active') list = list.filter(c=>c.inbound_count>0&&c.outbound_count>0);
+  if(currentTab==='active') list = list.filter(c=>Number(c.outbound_after_first_inbound_count||0)>0);
   else if(currentTab==='unread') list = list.filter(c=>c.unread>0);
   if(q) list = list.filter(c=>c.contact.includes(q)||(c.name||'').toLowerCase().includes(q));
 
@@ -776,14 +782,16 @@ function renderContacts(){
     return;
   }
   el.innerHTML = list.map(c=>{
-    const twoway = c.inbound_count>0&&c.outbound_count>0;
+    const twoway = Number(c.outbound_after_first_inbound_count||0)>0;
     const unread = c.unread>0;
+    const optedOut = c.sms_opt_status==='opted_out';
     const displayName = c.name||c.contact;
     const subline = c.name ? c.contact : `via ${c.my_number}`;
-    let pill = unread?`<span class="pill p-unread">+${c.unread}</span>`:
+    let pill = optedOut?`<span class="pill p-optout">STOP</span>`:
+               unread?`<span class="pill p-unread">+${c.unread}</span>`:
                twoway?`<span class="pill p-active">2-way</span>`:
                `<span class="pill p-out">исх.</span>`;
-    const avClass = `av${unread?' unread':''}${twoway?' twoway':''}`;
+    const avClass = `av${unread?' unread':''}${twoway?' twoway':''}${optedOut?' opted-out':''}`;
     const initials = (c.name?c.name.slice(0,2).toUpperCase():c.contact.slice(-4));
     return `<div class="contact-item${currentContact===c.contact?' active':''}" onclick="openChat('${c.contact}','${c.my_number}')">
       <div class="${avClass}">${initials}</div>
@@ -794,6 +802,15 @@ function renderContacts(){
       <div class="ci-meta"><span class="ci-time">${fmtTime(c.last_at)}</span>${pill}</div>
     </div>`;
   }).join('');
+}
+
+function renderChatFlags(contact){
+  const c = contacts.find(x=>x.contact===contact)||{};
+  const flags = [];
+  if(c.sms_opt_status==='opted_out'){
+    flags.push('<span class="chat-flag stop">STOP / opted out</span>');
+  }
+  document.getElementById('chat-flags').innerHTML = flags.join('');
 }
 
 function updateUnreadBadge(){
@@ -820,6 +837,7 @@ async function openChat(contact, myNum){
   document.getElementById('chat-name').textContent = displayName;
   document.getElementById('chat-num').textContent = contact;
   document.getElementById('chat-av').textContent = displayName.slice(0,2).toUpperCase();
+  renderChatFlags(contact);
 
   renderContacts();
   await loadMsgs();

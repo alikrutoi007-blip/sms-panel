@@ -2146,7 +2146,11 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_provider_id ON messages(provider_message_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_broadcast_id ON messages(broadcast_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_my_number ON messages(my_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_contact_created_at ON messages(my_number, contact, created_at DESC, id DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_direction_status_created_at ON messages(my_number, direction, status, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_id ON broadcast_recipients(broadcast_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_status ON broadcast_recipients(broadcast_id, status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_recent ON broadcast_recipients(broadcast_id, id DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status ON broadcast_recipients(status)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_provider_id ON broadcast_recipients(provider_message_id)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_phone_per_broadcast ON broadcast_recipients(broadcast_id, phone)")
@@ -2273,16 +2277,26 @@ def api_contacts():
 def api_messages(contact):
     db = get_db()
     sender_number = request_sender_number()
+    try:
+        limit = int(request.args.get("limit", 250))
+    except (TypeError, ValueError):
+        limit = 250
+    limit = max(50, min(limit, 500))
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
         SELECT *
-        FROM messages
-        WHERE contact = %s
-          AND (%s = '' OR my_number = %s)
-        ORDER BY created_at ASC
+        FROM (
+            SELECT *
+            FROM messages
+            WHERE contact = %s
+              AND (%s = '' OR my_number = %s)
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+        ) recent_messages
+        ORDER BY created_at ASC, id ASC
         """,
-        (contact, sender_number, sender_number)
+        (contact, sender_number, sender_number, limit)
     )
     rows = cur.fetchall()
     cur.close()

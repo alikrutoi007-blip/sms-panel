@@ -747,6 +747,15 @@ let notifGranted = false;
 let senderProfiles = [];
 let currentSender = MY_NUMBER;
 let currentChatMyNumber = MY_NUMBER;
+let lastContactsPayload = '';
+let lastMessagesPayload = '';
+let contactsLoading = false;
+let messagesLoading = false;
+let statsLoading = false;
+let broadcastStatusLoading = false;
+const POLL_ACTIVE_MS = 15000;
+const POLL_HIDDEN_MS = 60000;
+const BROADCAST_POLL_MS = 7000;
 const ACTIVE_SENDER_STORAGE_KEY = 'active_sender_number';
 const HIDE_OPTOUT_STORAGE_KEY = 'hide_opted_out_contacts';
 let hideOptedOutContacts = false;
@@ -876,6 +885,8 @@ function renderSenderProfileList(){
 function resetCurrentViewForSender(){
   currentContact = null;
   currentChatMyNumber = getActiveSenderNumber();
+  lastContactsPayload = '';
+  lastMessagesPayload = '';
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';
@@ -984,9 +995,14 @@ async function saveSenderProfile(){
 
 // ─── CONTACTS ───
 async function loadContacts(){
+  if(contactsLoading) return;
+  contactsLoading = true;
   try{
     const r = await fetch(buildApiUrl('/api/contacts',{my_number:getActiveSenderNumber()}));
     const newContacts = await r.json();
+    const payloadKey = JSON.stringify(newContacts);
+    if(payloadKey === lastContactsPayload) return;
+    lastContactsPayload = payloadKey;
     // Check for new inbound messages → notifications
     newContacts.forEach(c=>{
       if(c.inbound_count > 0){
@@ -1007,6 +1023,7 @@ async function loadContacts(){
     updateUnreadBadge();
     renderContacts();
   }catch(e){}
+  finally{contactsLoading = false;}
 }
 
 function isOptedOutContact(contact){
@@ -1113,8 +1130,13 @@ document.getElementById('contact-search').addEventListener('input', renderContac
 
 // ─── CHAT ───
 async function openChat(contact, myNum){
+  const previousContact = currentContact;
+  const previousSender = currentChatMyNumber;
   currentContact = contact;
   currentChatMyNumber = String(myNum || getActiveSenderNumber()).trim() || MY_NUMBER;
+  if(previousContact !== currentContact || previousSender !== currentChatMyNumber){
+    lastMessagesPayload = '';
+  }
   const c = contacts.find(x=>x.contact===contact)||{};
   const displayName = c.name||contact;
 
@@ -1138,12 +1160,19 @@ async function openChat(contact, myNum){
 
 async function loadMsgs(){
   if(!currentContact) return;
+  if(messagesLoading) return;
+  messagesLoading = true;
   try{
     const msgs = await (await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(currentContact)}`,{
-      my_number:getCurrentChatSenderNumber()
+      my_number:getCurrentChatSenderNumber(),
+      limit:250
     }))).json();
+    const payloadKey = JSON.stringify(msgs);
+    if(payloadKey === lastMessagesPayload) return;
+    lastMessagesPayload = payloadKey;
     renderMsgs(msgs);
   }catch(e){}
+  finally{messagesLoading = false;}
 }
 
 function renderMsgs(msgs){
@@ -1224,6 +1253,7 @@ async function openContactPanel(phone){
 function collapseContact(){
   currentContact = null;
   currentChatMyNumber = getActiveSenderNumber();
+  lastMessagesPayload = '';
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';
@@ -1283,6 +1313,8 @@ async function saveContact(){
 
 // ─── STATS dashboard ───
 async function loadStats(){
+  if(statsLoading) return;
+  statsLoading = true;
   try{
     const s = await (await fetch(buildApiUrl('/api/stats',{my_number:getActiveSenderNumber()}))).json();
     document.getElementById('st-contacts').textContent = s.total_contacts;
@@ -1290,6 +1322,7 @@ async function loadStats(){
     document.getElementById('st-sent').textContent     = s.today_sent;
     document.getElementById('st-recv').textContent     = s.today_recv;
   }catch(e){}
+  finally{statsLoading = false;}
 }
 
 function setDashDate(){
@@ -1508,6 +1541,8 @@ async function startBroadcast(){
 function pollBC(id,total){
   clearInterval(bcPollTimer);
   bcPollTimer=setInterval(async()=>{
+    if(broadcastStatusLoading || document.hidden) return;
+    broadcastStatusLoading = true;
     try{
       const d=await (await fetch(`/api/broadcast/${id}`)).json();
       const actualTotal=Number(d.total)||total;
@@ -1534,7 +1569,8 @@ function pollBC(id,total){
         loadBCHistory();
       }
     }catch(e){}
-  },1000);
+    finally{broadcastStatusLoading = false;}
+  },BROADCAST_POLL_MS);
 }
 async function loadBCHistory(){
   try{
@@ -1584,8 +1620,21 @@ async function sendNew(){
 // ─── POLL ───
 function startPoll(){
   clearInterval(pollTimer);
-  pollTimer=setInterval(async()=>{await loadContacts();if(currentContact)await loadMsgs();},3000);
+  const interval = document.hidden ? POLL_HIDDEN_MS : POLL_ACTIVE_MS;
+  pollTimer=setInterval(async()=>{
+    await loadContacts();
+    if(currentContact && !document.hidden) await loadMsgs();
+  },interval);
 }
+
+document.addEventListener('visibilitychange',()=>{
+  startPoll();
+  if(!document.hidden){
+    loadContacts();
+    if(currentContact) loadMsgs();
+    loadStats();
+  }
+});
 
 // ─── HELPERS ───
 function fmtTime(iso){
@@ -1728,7 +1777,7 @@ resetBroadcastDiagnostics();
 initApp();
 
 // Обновляем статистику каждые 30 сек
-setInterval(loadStats, 30000);
+setInterval(()=>{if(!document.hidden) loadStats();}, 60000);
 </script>
 </body>
 </html>

@@ -44,6 +44,7 @@ BROADCAST_RATE_LIMIT_PER_MINUTE = max(1, int(os.environ.get("BROADCAST_RATE_LIMI
 BROADCAST_MIN_INTERVAL_SECONDS = 60.0 / BROADCAST_RATE_LIMIT_PER_MINUTE
 MAX_BROADCAST_RETRIES = max(1, int(os.environ.get("MAX_BROADCAST_RETRIES", "3")))
 BROADCAST_STALE_MINUTES = max(5, int(os.environ.get("BROADCAST_STALE_MINUTES", "10")))
+BROADCAST_RECIPIENT_COOLDOWN_HOURS = max(1, int(os.environ.get("BROADCAST_RECIPIENT_COOLDOWN_HOURS", "48")))
 BROADCAST_WORKER_LOCK_ID = 2026040201
 DEFAULT_COUNTRY_CODE = os.environ.get("DEFAULT_COUNTRY_CODE", "1")
 
@@ -715,6 +716,83 @@ def evaluate_numbers_for_sms(conn, numbers_raw, allow_external_lookup=True):
     }
 
 
+def broadcast_cooldown_cutoff():
+    return (datetime.utcnow() - timedelta(hours=BROADCAST_RECIPIENT_COOLDOWN_HOURS)).strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+def build_recent_broadcast_suppression(phone):
+    normalized_phone = normalize_phone_number(phone, DEFAULT_COUNTRY_CODE) or str(phone or "").strip()
+    return {
+        "input_phone": phone,
+        "normalized_phone": normalized_phone,
+        "accepted": False,
+        "decision": "rejected",
+        "reason": "recent_broadcast",
+        "reason_display": f"Skipped: broadcast already queued/sent in last {BROADCAST_RECIPIENT_COOLDOWN_HOURS}h",
+        "line_type": "",
+        "carrier_name": "",
+        "country_code": "",
+        "cache_hit": True,
+        "lookup_performed": False,
+        "source": "broadcast_cooldown",
+        "checked_at": utcnow_iso(),
+        "expires_at": iso_after(BROADCAST_RECIPIENT_COOLDOWN_HOURS * 3600),
+        "error_text": "",
+    }
+
+
+def get_recent_broadcast_phones(conn, phones, exclude_broadcast_id=None, exclude_recipient_id=None):
+    normalized_phones = [
+        normalize_phone_number(phone, DEFAULT_COUNTRY_CODE) or str(phone or "").strip()
+        for phone in phones or []
+    ]
+    normalized_phones = [phone for phone in normalized_phones if phone]
+    if not normalized_phones:
+        return set()
+
+    cutoff = broadcast_cooldown_cutoff()
+    cur = conn.cursor()
+    excluded_broadcast = exclude_broadcast_id or 0
+    excluded_recipient = exclude_recipient_id or 0
+    cur.execute(
+        """
+        SELECT DISTINCT br.phone
+        FROM broadcast_recipients br
+        JOIN broadcasts b ON b.id = br.broadcast_id
+        WHERE br.phone = ANY(%s)
+          AND COALESCE(br.finalized_at, br.sent_at, br.last_attempt_at, br.queued_at, b.created_at) >= %s
+          AND COALESCE(br.status, '') IN (
+              'pending', 'sending', 'sent', 'delivered', 'delivery_failed', 'delivery_unconfirmed'
+          )
+          AND (%s = 0 OR br.broadcast_id <> %s)
+          AND (%s = 0 OR br.id <> %s)
+        UNION
+        SELECT DISTINCT m.contact
+        FROM messages m
+        WHERE m.contact = ANY(%s)
+          AND m.direction = 'outbound'
+          AND m.broadcast_id IS NOT NULL
+          AND m.created_at >= %s
+          AND (%s = 0 OR m.broadcast_id <> %s)
+        """,
+        (
+            normalized_phones,
+            cutoff,
+            excluded_broadcast,
+            excluded_broadcast,
+            excluded_recipient,
+            excluded_recipient,
+            normalized_phones,
+            cutoff,
+            excluded_broadcast,
+            excluded_broadcast,
+        )
+    )
+    rows = cur.fetchall()
+    cur.close()
+    return {row[0] for row in rows if row and row[0]}
+
+
 def send_telnyx_message(to_number, from_number, text):
     resp = requests.post(
         "https://api.telnyx.com/v2/messages",
@@ -1264,6 +1342,36 @@ def process_next_broadcast(conn):
     )
     cur.close()
     conn.commit()
+
+    recent_broadcast_phones = get_recent_broadcast_phones(
+        conn,
+        [row["phone"]],
+        exclude_broadcast_id=row["broadcast_id"],
+        exclude_recipient_id=row["id"],
+    )
+    if row["phone"] in recent_broadcast_phones:
+        finalized_at = utcnow_iso()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE broadcast_recipients
+            SET
+                status = 'not_sent',
+                finalized_at = COALESCE(finalized_at, %s),
+                last_error_code = 'recent_broadcast',
+                last_error_detail = %s
+            WHERE id = %s
+            """,
+            (
+                finalized_at,
+                f"Skipped: broadcast already queued/sent in last {BROADCAST_RECIPIENT_COOLDOWN_HOURS}h",
+                row["id"],
+            )
+        )
+        cur.close()
+        refresh_broadcast_stats(conn, row["broadcast_id"])
+        conn.commit()
+        return True
 
     lookup_result = assess_phone_for_sms(conn, row["phone"])
     if not lookup_result.get("accepted"):
@@ -2148,9 +2256,11 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_my_number ON messages(my_number)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_contact_created_at ON messages(my_number, contact, created_at DESC, id DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_direction_status_created_at ON messages(my_number, direction, status, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_broadcast_contact_created_at ON messages(contact, broadcast_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_id ON broadcast_recipients(broadcast_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_status ON broadcast_recipients(broadcast_id, status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_recent ON broadcast_recipients(broadcast_id, id DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_phone_status_recent ON broadcast_recipients(phone, status, queued_at, sent_at, finalized_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status ON broadcast_recipients(status)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_provider_id ON broadcast_recipients(provider_message_id)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_recipients_phone_per_broadcast ON broadcast_recipients(broadcast_id, phone)")
@@ -2571,6 +2681,20 @@ def api_broadcast():
     lookup = evaluate_numbers_for_sms(db, numbers_raw, allow_external_lookup=False)
     numbers = lookup["accepted_numbers"]
     rejected = lookup.get("rejected", [])
+
+    recent_broadcast_phones = get_recent_broadcast_phones(db, numbers)
+    if recent_broadcast_phones:
+        numbers = [number for number in numbers if number not in recent_broadcast_phones]
+        suppressed = [
+            sanitize_lookup_result(build_recent_broadcast_suppression(phone))
+            for phone in sorted(recent_broadcast_phones)
+        ]
+        rejected = rejected + suppressed
+        lookup["accepted"] = [item for item in lookup.get("accepted", []) if item.get("normalized_phone") not in recent_broadcast_phones]
+        lookup["accepted_numbers"] = numbers
+        lookup["accepted_count"] = len(numbers)
+        lookup["rejected"] = rejected
+        lookup["rejected_count"] = len(rejected)
 
     if not text:
         db.commit()

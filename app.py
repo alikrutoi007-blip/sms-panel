@@ -2281,7 +2281,7 @@ def api_messages(contact):
         limit = int(request.args.get("limit", 250))
     except (TypeError, ValueError):
         limit = 250
-    limit = max(50, min(limit, 500))
+    limit = max(50, min(limit, 5000))
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """

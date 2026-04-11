@@ -275,6 +275,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .bm{display:flex;align-items:center;gap:4px;margin-top:3px;opacity:.5}
 .bt{font-family:'IBM Plex Mono',monospace;font-size:9px}
 .bs{font-size:9px}
+.empty-msg{color:var(--tm);font-style:italic}
 .ddiv{text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--tm);margin:8px 0 4px}
 .input-row{padding:12px 16px;border-top:1px solid var(--b);background:var(--s1);display:flex;gap:8px;align-items:flex-end}
 #msg-inp{flex:1;background:var(--s2);border:1px solid var(--b);border-radius:9px;padding:9px 12px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:var(--t);outline:none;resize:none;max-height:110px;min-height:40px;line-height:1.5;transition:border-color .2s}
@@ -749,6 +750,7 @@ let currentSender = MY_NUMBER;
 let currentChatMyNumber = MY_NUMBER;
 let lastContactsPayload = '';
 let lastMessagesPayload = '';
+let currentMessages = [];
 let contactsLoading = false;
 let messagesLoading = false;
 let statsLoading = false;
@@ -887,6 +889,7 @@ function resetCurrentViewForSender(){
   currentChatMyNumber = getActiveSenderNumber();
   lastContactsPayload = '';
   lastMessagesPayload = '';
+  currentMessages = [];
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';
@@ -1136,6 +1139,7 @@ async function openChat(contact, myNum){
   currentChatMyNumber = String(myNum || getActiveSenderNumber()).trim() || MY_NUMBER;
   if(previousContact !== currentContact || previousSender !== currentChatMyNumber){
     lastMessagesPayload = '';
+    currentMessages = [];
   }
   const c = contacts.find(x=>x.contact===contact)||{};
   const displayName = c.name||contact;
@@ -1153,24 +1157,33 @@ async function openChat(contact, myNum){
   renderChatFlags(contact);
 
   renderContacts();
-  await loadMsgs();
+  await loadMsgs({full:true});
   await openContactPanel(contact);
   startPoll();
 }
 
-async function loadMsgs(){
+async function loadMsgs({full=false}={}){
   if(!currentContact) return;
   if(messagesLoading) return;
   messagesLoading = true;
   try{
     const msgs = await (await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(currentContact)}`,{
       my_number:getCurrentChatSenderNumber(),
-      limit:250
+      limit:full?5000:250
     }))).json();
-    const payloadKey = JSON.stringify(msgs);
+    if(full){
+      currentMessages = msgs;
+    } else if(currentMessages.length){
+      const byId = new Map(currentMessages.map(m=>[String(m.id),m]));
+      msgs.forEach(m=>byId.set(String(m.id),m));
+      currentMessages = [...byId.values()].sort((a,b)=>(Number(a.id)||0)-(Number(b.id)||0));
+    } else {
+      currentMessages = msgs;
+    }
+    const payloadKey = JSON.stringify(currentMessages);
     if(payloadKey === lastMessagesPayload) return;
     lastMessagesPayload = payloadKey;
-    renderMsgs(msgs);
+    renderMsgs(currentMessages);
   }catch(e){}
   finally{messagesLoading = false;}
 }
@@ -1184,7 +1197,9 @@ function renderMsgs(msgs){
     if(d!==lastDate){html+=`<div class="ddiv">${fmtDate(d)}</div>`;lastDate=d;}
     const dir = m.direction==='outbound'?'out':'in';
     const si  = m.direction==='outbound'?`<span class="bs">${stIcon(m.status)}</span>`:'';
-    html+=`<div class="mr ${dir}"><div class="bbl">${esc(m.body)}<div class="bm"><span class="bt">${m.created_at.slice(11,16)}</span>${si}</div></div></div>`;
+    const body = String(m.body||'').trim();
+    const bodyHtml = body ? esc(m.body) : '<span class="empty-msg">empty / media message</span>';
+    html+=`<div class="mr ${dir}"><div class="bbl">${bodyHtml}<div class="bm"><span class="bt">${m.created_at.slice(11,16)}</span>${si}</div></div></div>`;
   });
   area.innerHTML=html;
   if(atBot||msgs.length===0) area.scrollTop=area.scrollHeight;
@@ -1254,6 +1269,7 @@ function collapseContact(){
   currentContact = null;
   currentChatMyNumber = getActiveSenderNumber();
   lastMessagesPayload = '';
+  currentMessages = [];
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';

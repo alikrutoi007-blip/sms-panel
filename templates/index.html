@@ -743,6 +743,7 @@ let bcPollTimer = null;
 let saveTimer = null;
 let currentTags = [];
 let lastLookupSummary = null;
+let lookupRunning = false;
 let lastMsgIds = {};   // contact → max id seen
 let notifGranted = false;
 let senderProfiles = [];
@@ -758,6 +759,7 @@ let broadcastStatusLoading = false;
 const POLL_ACTIVE_MS = 15000;
 const POLL_HIDDEN_MS = 60000;
 const BROADCAST_POLL_MS = 7000;
+const LOOKUP_CHUNK_SIZE = 20;
 const ACTIVE_SENDER_STORAGE_KEY = 'active_sender_number';
 const HIDE_OPTOUT_STORAGE_KEY = 'hide_opted_out_contacts';
 let hideOptedOutContacts = false;
@@ -1417,8 +1419,14 @@ function normalizeLocalNumber(raw){
   if(digits.length>=8&&digits.length<=15) return `+${digits}`;
   return '';
 }
+function parseNumberInput(value){
+  return String(value||'')
+    .split(/[\n,;]+/)
+    .map(l=>l.trim())
+    .filter(Boolean);
+}
 function updateNS(){
-  const lines=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  const lines=parseNumberInput(document.getElementById('bc-nums').value);
   const valid=lines.map(normalizeLocalNumber).filter(Boolean);
   const uniq=[...new Set(valid)];
   if(lastLookupSummary) resetLookupSummary();
@@ -1472,6 +1480,54 @@ function renderLookupColumn(items, emptyText){
   </div>`).join('');
 }
 
+function createLookupAggregate(totalSubmitted, duplicatesRemoved){
+  return {
+    total_submitted: totalSubmitted,
+    processed: 0,
+    duplicates_removed: duplicatesRemoved,
+    accepted_count: 0,
+    rejected_count: 0,
+    cache_hits: 0,
+    lookup_hits: 0,
+    deferred_lookup_count: 0,
+    broadcast_cooldown_count: 0,
+    mode: 'live_lookup_chunks',
+    accepted_numbers: [],
+    accepted: [],
+    rejected: [],
+    progress_label: 'Checked',
+    progress_text: `0/${totalSubmitted}`,
+    running: true,
+    incomplete: false,
+  };
+}
+
+function mergeLookupAggregate(target, lookup, processedCount, totalCount){
+  const accepted = lookup?.accepted || [];
+  const rejected = lookup?.rejected || [];
+  const acceptedNumbers = lookup?.accepted_numbers || accepted.map(x=>x.normalized_phone).filter(Boolean);
+  const existingAccepted = new Set(target.accepted_numbers || []);
+  target.accepted = (target.accepted || []).concat(accepted.filter(item=>{
+    const phone=item.normalized_phone||item.input_phone||'';
+    if(!phone || existingAccepted.has(phone)) return false;
+    existingAccepted.add(phone);
+    return true;
+  }));
+  acceptedNumbers.forEach(phone=>{if(phone) existingAccepted.add(phone);});
+  target.accepted_numbers = [...existingAccepted];
+  target.rejected = (target.rejected || []).concat(rejected);
+  target.accepted_count = target.accepted_numbers.length;
+  target.rejected_count = target.rejected.length;
+  target.processed = processedCount;
+  target.cache_hits = (Number(target.cache_hits)||0) + (Number(lookup?.cache_hits)||0);
+  target.lookup_hits = (Number(target.lookup_hits)||0) + (Number(lookup?.lookup_hits)||0);
+  target.deferred_lookup_count = (Number(target.deferred_lookup_count)||0) + (Number(lookup?.deferred_lookup_count)||0);
+  target.broadcast_cooldown_count = (Number(target.broadcast_cooldown_count)||0) + (Number(lookup?.broadcast_cooldown_count)||0);
+  target.progress_text = `${processedCount}/${totalCount}`;
+  target.progress_label = 'Checked';
+  return target;
+}
+
 function renderLookupSummary(lookup){
   lastLookupSummary=lookup||null;
   const box=document.getElementById('lookup-box');
@@ -1485,33 +1541,71 @@ function renderLookupSummary(lookup){
   document.getElementById('lookup-accepted').textContent=lookup.accepted_count||0;
   document.getElementById('lookup-rejected').textContent=lookup.rejected_count||0;
   document.getElementById('lookup-cache').textContent=lookup.cache_hits||0;
-  document.getElementById('lookup-live').textContent=deferred||(lookup.lookup_hits||0);
+  document.getElementById('lookup-live').textContent=lookup.progress_text || deferred || (lookup.lookup_hits||0);
   if(metricLabels[0]) metricLabels[0].textContent=deferred?'В очереди / good':'Пройдут в SMS';
-  if(metricLabels[3]) metricLabels[3].textContent=deferred?'Background lookup':'Live lookups';
+  if(metricLabels[3]) metricLabels[3].textContent=lookup.progress_label || (deferred?'Background lookup':'Live lookups');
   document.getElementById('lookup-good').innerHTML=renderLookupColumn(lookup.accepted||[],'SMS-capable номера не найдены.');
   document.getElementById('lookup-bad').innerHTML=renderLookupColumn(lookup.rejected||[],'Все номера выглядят пригодными.');
-  document.getElementById('lookup-apply-btn').disabled=deferred?true:!(lookup.accepted_numbers||[]).length;
+  document.getElementById('lookup-apply-btn').disabled=lookup.running||lookup.incomplete||deferred?true:!(lookup.accepted_numbers||[]).length;
 }
 
 async function runNumberLookup(){
-  const nums=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  if(lookupRunning) return;
+  const nums=parseNumberInput(document.getElementById('bc-nums').value);
   if(!nums.length){showToast('Добавь номера','err');return;}
+  const normalized=nums.map(normalizeLocalNumber).filter(Boolean);
+  const unique=[...new Set(normalized)];
+  const duplicatesRemoved=normalized.length-unique.length;
+  if(!unique.length){showToast('Нет номеров в правильном формате','err');return;}
   const btn=document.getElementById('bc-lookup-btn');
+  lookupRunning=true;
   btn.disabled=true;
+  document.getElementById('lookup-apply-btn').disabled=true;
+  let aggregate=createLookupAggregate(nums.length,duplicatesRemoved);
+  const invalid=nums.filter(n=>!normalizeLocalNumber(n));
+  aggregate.rejected=invalid.map(n=>({
+    input_phone:n,
+    normalized_phone:'',
+    reason:'invalid_format',
+    reason_display:'Invalid phone format'
+  }));
+  aggregate.rejected_count=aggregate.rejected.length;
+  renderLookupSummary(aggregate);
+  let lookupFailed=false;
   try{
-    const d=await (await fetch('/api/number-lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({numbers:nums})})).json();
-    if(d.ok){
-      renderLookupSummary(d.lookup);
-      const accepted=Number(d.lookup?.accepted_count)||0;
-      const rejected=Number(d.lookup?.rejected_count)||0;
-      showToast(`Lookup: ${accepted} good, ${rejected} rejected`,rejected?'err':'ok');
-    }else{
-      showToast('Ошибка проверки номеров','err');
+    for(let i=0;i<unique.length;i+=LOOKUP_CHUNK_SIZE){
+      const chunk=unique.slice(i,i+LOOKUP_CHUNK_SIZE);
+      btn.textContent=`Проверяем ${Math.min(i+chunk.length,unique.length)}/${unique.length}`;
+      const d=await (await fetch('/api/number-lookup',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({numbers:chunk,broadcast:true})
+      })).json();
+      if(!d.ok){
+        lookupFailed=true;
+        showToast('Ошибка проверки номеров','err');
+        break;
+      }
+      aggregate=mergeLookupAggregate(aggregate,d.lookup,Math.min(i+chunk.length,unique.length),unique.length);
+      renderLookupSummary(aggregate);
     }
+    aggregate.running=false;
+    aggregate.incomplete=lookupFailed;
+    if(lookupFailed) aggregate.progress_label='Stopped';
+    renderLookupSummary(aggregate);
+    const accepted=Number(aggregate.accepted_count)||0;
+    const rejected=Number(aggregate.rejected_count)||0;
+    showToast(`Lookup: ${accepted} good, ${rejected} rejected`,rejected?'err':'ok');
   }catch(e){
+    aggregate.running=false;
+    aggregate.incomplete=true;
+    aggregate.progress_label='Stopped';
+    renderLookupSummary(aggregate);
     showToast('Сетевая ошибка','err');
   }
+  btn.textContent='Проверить номера';
   btn.disabled=false;
+  lookupRunning=false;
 }
 
 function applyAcceptedNumbers(){
@@ -1524,7 +1618,7 @@ function applyAcceptedNumbers(){
 
 async function startBroadcast(){
   const name=document.getElementById('bc-name').value.trim()||'Рассылка';
-  const nums=document.getElementById('bc-nums').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  const nums=parseNumberInput(document.getElementById('bc-nums').value);
   const text=document.getElementById('bc-text').value.trim();
   if(!nums.length){showToast('Добавь номера','err');return;}
   if(!text){showToast('Напиши текст','err');return;}

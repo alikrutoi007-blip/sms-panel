@@ -793,6 +793,32 @@ def get_recent_broadcast_phones(conn, phones, exclude_broadcast_id=None, exclude
     return {row[0] for row in rows if row and row[0]}
 
 
+def apply_broadcast_cooldown_filter(conn, lookup):
+    numbers = lookup.get("accepted_numbers") or []
+    recent_broadcast_phones = get_recent_broadcast_phones(conn, numbers)
+    if not recent_broadcast_phones:
+        lookup["broadcast_cooldown_count"] = 0
+        return lookup
+
+    filtered_numbers = [number for number in numbers if number not in recent_broadcast_phones]
+    suppressed = [
+        sanitize_lookup_result(build_recent_broadcast_suppression(phone))
+        for phone in sorted(recent_broadcast_phones)
+    ]
+    rejected = (lookup.get("rejected") or []) + suppressed
+    lookup["accepted"] = [
+        item
+        for item in lookup.get("accepted", [])
+        if item.get("normalized_phone") not in recent_broadcast_phones
+    ]
+    lookup["accepted_numbers"] = filtered_numbers
+    lookup["accepted_count"] = len(filtered_numbers)
+    lookup["rejected"] = rejected
+    lookup["rejected_count"] = len(rejected)
+    lookup["broadcast_cooldown_count"] = len(suppressed)
+    return lookup
+
+
 def send_telnyx_message(to_number, from_number, text):
     resp = requests.post(
         "https://api.telnyx.com/v2/messages",
@@ -2577,8 +2603,11 @@ def api_stats():
 def api_number_lookup():
     body = request.get_json(silent=True) or {}
     numbers_raw = body.get("numbers", [])
+    broadcast_context = bool(body.get("broadcast") or body.get("broadcast_context"))
     db = get_db()
     lookup = evaluate_numbers_for_sms(db, numbers_raw)
+    if broadcast_context:
+        lookup = apply_broadcast_cooldown_filter(db, lookup)
     db.commit()
     return jsonify({"ok": True, "lookup": lookup})
 
@@ -2679,22 +2708,9 @@ def api_broadcast():
 
     db = get_db()
     lookup = evaluate_numbers_for_sms(db, numbers_raw, allow_external_lookup=False)
+    lookup = apply_broadcast_cooldown_filter(db, lookup)
     numbers = lookup["accepted_numbers"]
     rejected = lookup.get("rejected", [])
-
-    recent_broadcast_phones = get_recent_broadcast_phones(db, numbers)
-    if recent_broadcast_phones:
-        numbers = [number for number in numbers if number not in recent_broadcast_phones]
-        suppressed = [
-            sanitize_lookup_result(build_recent_broadcast_suppression(phone))
-            for phone in sorted(recent_broadcast_phones)
-        ]
-        rejected = rejected + suppressed
-        lookup["accepted"] = [item for item in lookup.get("accepted", []) if item.get("normalized_phone") not in recent_broadcast_phones]
-        lookup["accepted_numbers"] = numbers
-        lookup["accepted_count"] = len(numbers)
-        lookup["rejected"] = rejected
-        lookup["rejected_count"] = len(rejected)
 
     if not text:
         db.commit()

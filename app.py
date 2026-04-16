@@ -839,7 +839,20 @@ def send_telnyx_message(to_number, from_number, text):
         error_text = first.get("detail") or first.get("title") or resp.text
     else:
         error_text = resp.text
-    return False, resp.status_code, data, error_text
+    return False, resp.status_code, data, friendly_telnyx_error(error_text)
+
+
+def friendly_telnyx_error(error_text):
+    text = str(error_text or "").strip()
+    low = text.lower()
+    if "account has been deactivated" in low or "out of funds" in low:
+        return (
+            f"{text} Telnyx still marks the account as deactivated. "
+            "Аккаунт все еще заблокирован на стороне Telnyx. "
+            "После пополнения подожди несколько минут, проверь Billing/Account status в Telnyx. "
+            "Если не включится, напиши в Telnyx support и попроси reactivate messaging."
+        )
+    return text
 
 
 def insert_message_record(conn, direction, contact, my_number, body, status, created_at,
@@ -2369,6 +2382,10 @@ def api_contacts():
                 SUM(CASE WHEN m.direction='inbound'  THEN 1 ELSE 0 END)::int AS inbound_count,
                 SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END)::int AS outbound_count,
                 SUM(CASE WHEN m.direction='inbound' AND m.status='received' THEN 1 ELSE 0 END)::int AS unread,
+                MAX(CASE WHEN m.direction='inbound' THEN m.id END)::int AS last_inbound_id,
+                MAX(CASE WHEN m.direction='outbound' THEN m.id END)::int AS last_outbound_id,
+                MAX(CASE WHEN m.direction='inbound' THEN m.created_at END) AS last_inbound_at,
+                MAX(CASE WHEN m.direction='outbound' THEN m.created_at END) AS last_outbound_at,
                 MIN(CASE WHEN m.direction='inbound' THEN m.created_at END) AS first_inbound_at,
                 COALESCE(c.name,    '') AS name,
                 COALESCE(c.company, '') AS company,
@@ -2378,6 +2395,18 @@ def api_contacts():
             LEFT JOIN contacts c ON c.phone = m.contact
             WHERE (%s = '' OR m.my_number = %s)
             GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status
+        ),
+        last_messages AS (
+            SELECT DISTINCT ON (m.contact, m.my_number)
+                m.contact,
+                m.my_number,
+                m.id AS last_message_id,
+                m.direction AS last_direction,
+                m.body AS last_body,
+                m.created_at AS last_message_at
+            FROM messages m
+            WHERE (%s = '' OR m.my_number = %s)
+            ORDER BY m.contact, m.my_number, m.created_at DESC, m.id DESC
         )
         SELECT
             cr.contact,
@@ -2386,10 +2415,40 @@ def api_contacts():
             cr.inbound_count,
             cr.outbound_count,
             cr.unread,
+            cr.last_inbound_id,
+            cr.last_outbound_id,
+            cr.last_inbound_at,
+            cr.last_outbound_at,
+            lm.last_message_id,
+            lm.last_direction,
+            lm.last_body,
+            lm.last_message_at,
             cr.name,
             cr.company,
             cr.tags,
             cr.sms_opt_status,
+            CASE
+                WHEN lm.last_direction = 'inbound'
+                 AND cr.sms_opt_status <> 'opted_out'
+                THEN 1 ELSE 0
+            END::int AS needs_reply,
+            CASE
+                WHEN lm.last_direction = 'outbound'
+                 AND cr.inbound_count > 0
+                 AND cr.sms_opt_status <> 'opted_out'
+                THEN 1 ELSE 0
+            END::int AS waiting_for_customer,
+            CASE
+                WHEN lm.last_direction = 'inbound' THEN (
+                    SELECT COUNT(*)::int
+                    FROM messages mi
+                    WHERE mi.contact = cr.contact
+                      AND mi.my_number = cr.my_number
+                      AND mi.direction = 'inbound'
+                      AND (cr.last_outbound_at IS NULL OR mi.created_at > cr.last_outbound_at)
+                )
+                ELSE 0
+            END::int AS inbound_waiting_count,
             CASE
                 WHEN cr.first_inbound_at IS NULL THEN 0
                 ELSE (
@@ -2402,8 +2461,11 @@ def api_contacts():
                 )
             END AS outbound_after_first_inbound_count
         FROM contact_rollup cr
+        LEFT JOIN last_messages lm
+          ON lm.contact = cr.contact
+         AND lm.my_number = cr.my_number
         ORDER BY cr.last_at DESC
-    """, (sender_number, sender_number))
+    """, (sender_number, sender_number, sender_number, sender_number))
     rows = cur.fetchall()
     cur.close()
     return jsonify([dict(r) for r in rows])
@@ -2570,10 +2632,18 @@ def api_stats():
     cur.execute(
         """
         SELECT COUNT(*) AS v
-        FROM messages
-        WHERE direction='inbound'
-          AND status='received'
-          AND (%s = '' OR my_number = %s)
+        FROM (
+            SELECT DISTINCT ON (m.contact, m.my_number)
+                m.contact,
+                m.my_number,
+                m.direction
+            FROM messages m
+            WHERE (%s = '' OR m.my_number = %s)
+            ORDER BY m.contact, m.my_number, m.created_at DESC, m.id DESC
+        ) last_threads
+        LEFT JOIN contacts c ON c.phone = last_threads.contact
+        WHERE last_threads.direction = 'inbound'
+          AND COALESCE(c.sms_opt_status, 'unknown') <> 'opted_out'
         """,
         (sender_number, sender_number)
     )

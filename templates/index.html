@@ -115,10 +115,11 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .tab-icon{font-size:12px}
 .tbadge{background:var(--red);color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:14px;text-align:center}
 .tbadge.hidden{visibility:hidden}
-.contact-tools{padding:8px 12px;border-bottom:1px solid var(--b);display:flex;justify-content:flex-end}
+.contact-tools{padding:8px 12px;border-bottom:1px solid var(--b);display:flex;justify-content:space-between;gap:6px}
 .contact-filter-btn{padding:6px 9px;border-radius:7px;border:1px solid var(--b);background:var(--s2);color:var(--td);cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.05em;text-transform:uppercase;transition:all .15s}
 .contact-filter-btn:hover{border-color:var(--red);color:var(--red)}
 .contact-filter-btn.active{border-color:rgba(255,79,106,.28);color:var(--red);background:rgba(255,79,106,.08)}
+.contact-filter-btn.notify-on{border-color:rgba(79,255,176,.28);color:var(--a);background:rgba(79,255,176,.08)}
 
 #contacts-list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
 
@@ -136,6 +137,9 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
   font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--td);
   flex-shrink:0;border:1px solid var(--b);position:relative;transition:border-color .2s;
 }
+.av.needs-reply{border-color:var(--yel);color:var(--yel);background:rgba(255,209,102,.08);box-shadow:0 0 0 1px rgba(255,209,102,.18),0 0 16px rgba(255,209,102,.08)}
+.av.needs-reply::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--yel);border:2px solid var(--s1)}
+.av.waiting{border-color:var(--b2);color:var(--td);background:var(--s2)}
 .av.unread::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--s1)}
 .av.twoway{border-color:var(--a);color:var(--a)}
 .av.opted-out{border-color:var(--red);color:var(--red);background:rgba(255,79,106,.08)}
@@ -148,6 +152,8 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .pill{font-size:9px;font-weight:600;padding:2px 6px;border-radius:6px;letter-spacing:.04em}
 .p-active{background:rgba(79,255,176,.12);color:var(--a)}
 .p-unread{background:rgba(255,79,106,.15);color:var(--red)}
+.p-need{background:rgba(255,209,102,.15);color:var(--yel)}
+.p-wait{background:rgba(90,98,128,.14);color:var(--td)}
 .p-out{background:var(--s3);color:var(--td)}
 .p-optout{background:rgba(255,79,106,.18);color:var(--red)}
 
@@ -466,11 +472,12 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
   <div class="tabs">
     <button class="tab active" onclick="switchTab('all',this)"><span class="tab-icon">💬</span><span>Все</span></button>
     <button class="tab" onclick="switchTab('active',this)"><span class="tab-icon">🔄</span><span>Активные</span></button>
-    <button class="tab" onclick="switchTab('unread',this)"><span class="tab-icon">🔴</span><span>Новые</span><span class="tbadge hidden" id="ubadge">0</span></button>
+    <button class="tab" onclick="switchTab('unread',this)"><span class="tab-icon">🔴</span><span>Ждут</span><span class="tbadge hidden" id="ubadge">0</span></button>
     <button class="tab" onclick="switchTab('broadcast',this)"><span class="tab-icon">📢</span><span>Рассылка</span></button>
   </div>
 
   <div class="contact-tools">
+    <button class="contact-filter-btn" id="notif-toggle-btn" onclick="enableNotifications()">notify</button>
     <button class="contact-filter-btn" id="optout-toggle-btn" onclick="toggleOptedOutVisibility()">Скрыть STOP</button>
   </div>
 
@@ -611,7 +618,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
       </div>
       <div class="stat-card">
         <div class="stat-val yellow" id="st-unread">—</div>
-        <div class="stat-label">Непрочитанных</div>
+        <div class="stat-label">Ждут ответа</div>
       </div>
       <div class="stat-card">
         <div class="stat-val blue" id="st-sent">—</div>
@@ -746,11 +753,13 @@ let lastLookupSummary = null;
 let lookupRunning = false;
 let lastMsgIds = {};   // contact → max id seen
 let notifGranted = false;
+let contactsPrimed = false;
+let baseTitle = document.title;
 let senderProfiles = [];
 let currentSender = MY_NUMBER;
 let currentChatMyNumber = MY_NUMBER;
-let lastContactsPayload = '';
-let lastMessagesPayload = '';
+let lastContactsPayload = null;
+let lastMessagesPayload = null;
 let currentMessages = [];
 let contactsLoading = false;
 let messagesLoading = false;
@@ -760,6 +769,8 @@ const POLL_ACTIVE_MS = 15000;
 const POLL_HIDDEN_MS = 60000;
 const BROADCAST_POLL_MS = 7000;
 const LOOKUP_CHUNK_SIZE = 20;
+const CONTACT_RENDER_LIMIT = 450;
+const CONTACT_SEARCH_RENDER_LIMIT = 900;
 const ACTIVE_SENDER_STORAGE_KEY = 'active_sender_number';
 const HIDE_OPTOUT_STORAGE_KEY = 'hide_opted_out_contacts';
 let hideOptedOutContacts = false;
@@ -781,13 +792,76 @@ function tagColor(tag){const i=tag.split('').reduce((a,c)=>a+c.charCodeAt(0),0)%
 
 // ─── Notifications ───
 function initNotifications(){
-  if('Notification' in window){
-    Notification.requestPermission().then(p=>{notifGranted=p==='granted';});
+  notifGranted = 'Notification' in window && Notification.permission === 'granted';
+  updateNotificationButton();
+}
+function updateNotificationButton(){
+  const btn = document.getElementById('notif-toggle-btn');
+  if(!btn) return;
+  if(!('Notification' in window)){
+    btn.textContent = 'no notify';
+    btn.disabled = true;
+    return;
   }
+  const permission = Notification.permission;
+  notifGranted = permission === 'granted';
+  btn.classList.toggle('notify-on', notifGranted);
+  btn.textContent = notifGranted ? 'notify on' : permission === 'denied' ? 'notify off' : 'enable notify';
+  btn.title = permission === 'denied'
+    ? 'Browser blocked notifications. Enable them in site settings.'
+    : 'Enable desktop notifications for new inbound SMS.';
+}
+async function enableNotifications(){
+  if(!('Notification' in window)){
+    showToast('Браузер не поддерживает уведомления','err');
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  notifGranted = permission === 'granted';
+  updateNotificationButton();
+  showToast(notifGranted?'Уведомления включены':'Уведомления не разрешены',notifGranted?'ok':'err');
 }
 function fireNotif(from, body){
   if(!notifGranted) return;
-  new Notification(`SMS от ${from}`,{body,icon:''});
+  try{
+    new Notification(`SMS от ${from}`,{body,tag:`sms-${from}`,renotify:true});
+  }catch(e){}
+}
+function notificationKey(contact){
+  return `${contact.my_number||''}|${contact.contact||''}`;
+}
+function latestInboundId(contact){
+  return Number(contact?.last_inbound_id||0);
+}
+function contactNeedsReply(contact){
+  if(isOptedOutContact(contact)) return false;
+  return Number(contact?.needs_reply||0) > 0 || contact?.last_direction === 'inbound';
+}
+function contactWaitingForCustomer(contact){
+  if(isOptedOutContact(contact)) return false;
+  return Number(contact?.waiting_for_customer||0) > 0 || (contact?.last_direction === 'outbound' && Number(contact?.inbound_count||0) > 0);
+}
+function contactPreview(contact){
+  const text = String(contact?.last_body || '').trim();
+  return text ? (text.length > 120 ? `${text.slice(0,117)}...` : text) : 'Новое сообщение';
+}
+function processInboundNotifications(newContacts){
+  newContacts.forEach(c=>{
+    const key = notificationKey(c);
+    const latest = latestInboundId(c);
+    const prev = Number(lastMsgIds[key] || 0);
+    if(!contactsPrimed){
+      lastMsgIds[key] = latest;
+      return;
+    }
+    if(latest > prev){
+      lastMsgIds[key] = latest;
+      if(contactNeedsReply(c) && (c.contact !== currentContact || document.hidden)){
+        fireNotif(c.name || c.contact, contactPreview(c));
+      }
+    }
+  });
+  contactsPrimed = true;
 }
 
 // ─── TABS ───
@@ -826,6 +900,34 @@ function buildApiUrl(path, params={}){
     }
   });
   return url.pathname + url.search;
+}
+
+function contactsPayloadKey(items){
+  return (items||[]).map(c=>[
+    c.contact,
+    c.my_number,
+    c.last_message_id,
+    c.last_direction,
+    c.last_inbound_id,
+    c.needs_reply,
+    c.waiting_for_customer,
+    c.sms_opt_status,
+    c.name,
+    c.company,
+    c.tags
+  ].join(':')).join('|');
+}
+
+function messagesPayloadKey(items){
+  const list = items || [];
+  const tail = list.slice(-10).map(m=>[
+    m.id,
+    m.direction,
+    m.status,
+    m.created_at,
+    String(m.body||'').length
+  ].join(':')).join('|');
+  return `${list.length}|${tail}`;
 }
 
 function getActiveSenderNumber(){
@@ -889,8 +991,10 @@ function renderSenderProfileList(){
 function resetCurrentViewForSender(){
   currentContact = null;
   currentChatMyNumber = getActiveSenderNumber();
-  lastContactsPayload = '';
-  lastMessagesPayload = '';
+  lastContactsPayload = null;
+  lastMessagesPayload = null;
+  contactsPrimed = false;
+  lastMsgIds = {};
   currentMessages = [];
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
@@ -1005,24 +1109,10 @@ async function loadContacts(){
   try{
     const r = await fetch(buildApiUrl('/api/contacts',{my_number:getActiveSenderNumber()}));
     const newContacts = await r.json();
-    const payloadKey = JSON.stringify(newContacts);
+    const payloadKey = contactsPayloadKey(newContacts);
     if(payloadKey === lastContactsPayload) return;
     lastContactsPayload = payloadKey;
-    // Check for new inbound messages → notifications
-    newContacts.forEach(c=>{
-      if(c.inbound_count > 0){
-        const prevId = lastMsgIds[c.contact] || 0;
-        if(c.unread > 0 && c.contact !== currentContact){
-          // fire once per new unread batch
-          if(!lastMsgIds[c.contact+'_notified']){
-            fireNotif(c.name||c.contact, 'Новое сообщение');
-            lastMsgIds[c.contact+'_notified'] = true;
-          }
-        } else if(c.unread === 0){
-          delete lastMsgIds[c.contact+'_notified'];
-        }
-      }
-    });
+    processInboundNotifications(newContacts);
     contacts = newContacts;
     updateOptedOutToggleBtn();
     updateUnreadBadge();
@@ -1036,13 +1126,11 @@ function isOptedOutContact(contact){
 }
 
 function contactPriority(contact){
-  const unread = Number(contact?.unread||0) > 0;
-  const twoway = Number(contact?.outbound_after_first_inbound_count||0) > 0;
   const inbound = Number(contact?.inbound_count||0) > 0;
   if(isOptedOutContact(contact)) return 4;
-  if(unread) return 0;
-  if(inbound && !twoway) return 1;
-  if(twoway) return 2;
+  if(contactNeedsReply(contact)) return 0;
+  if(contactWaitingForCustomer(contact)) return 2;
+  if(inbound) return 1;
   return 3;
 }
 
@@ -1083,26 +1171,32 @@ function renderContacts(){
 
   let list = contacts;
   if(hideOptedOutContacts) list = list.filter(c=>!isOptedOutContact(c));
-  if(currentTab==='active') list = list.filter(c=>Number(c.outbound_after_first_inbound_count||0)>0);
-  else if(currentTab==='unread') list = list.filter(c=>c.unread>0);
+  if(currentTab==='active') list = list.filter(c=>contactNeedsReply(c)||contactWaitingForCustomer(c));
+  else if(currentTab==='unread') list = list.filter(contactNeedsReply);
   if(q) list = list.filter(c=>c.contact.includes(q)||(c.name||'').toLowerCase().includes(q));
   list = sortContactsForList(list);
 
   if(!list.length){
-    el.innerHTML=`<div class="empty-sb">${currentTab==='active'?'Нет двусторонних':currentTab==='unread'?'Всё прочитано':'Нет переписок'}</div>`;
+    el.innerHTML=`<div class="empty-sb">${currentTab==='active'?'Нет активных диалогов':currentTab==='unread'?'Никто не ждёт ответа':'Нет переписок'}</div>`;
     return;
   }
-  el.innerHTML = list.map(c=>{
+  const renderLimit = q ? CONTACT_SEARCH_RENDER_LIMIT : CONTACT_RENDER_LIMIT;
+  const hiddenCount = Math.max(0, list.length - renderLimit);
+  const renderList = hiddenCount ? list.slice(0, renderLimit) : list;
+  el.innerHTML = renderList.map(c=>{
     const twoway = Number(c.outbound_after_first_inbound_count||0)>0;
-    const unread = c.unread>0;
+    const needsReply = contactNeedsReply(c);
+    const waiting = contactWaitingForCustomer(c);
     const optedOut = c.sms_opt_status==='opted_out';
     const displayName = c.name||c.contact;
     const subline = c.name ? c.contact : `via ${c.my_number}`;
+    const waitingCount = Number(c.inbound_waiting_count||0);
     let pill = optedOut?`<span class="pill p-optout">STOP</span>`:
-               unread?`<span class="pill p-unread">+${c.unread}</span>`:
+               needsReply?`<span class="pill p-need">${waitingCount>1?`+${waitingCount}`:'reply'}</span>`:
+               waiting?`<span class="pill p-wait">waiting</span>`:
                twoway?`<span class="pill p-active">2-way</span>`:
                `<span class="pill p-out">исх.</span>`;
-    const avClass = `av${unread?' unread':''}${twoway?' twoway':''}${optedOut?' opted-out':''}`;
+    const avClass = `av${needsReply?' needs-reply':''}${waiting?' waiting':''}${(!needsReply&&!waiting&&twoway)?' twoway':''}${optedOut?' opted-out':''}`;
     const initials = (c.name?c.name.slice(0,2).toUpperCase():c.contact.slice(-4));
     return `<div class="contact-item${currentContact===c.contact?' active':''}" onclick="openChat('${c.contact}','${c.my_number}')">
       <div class="${avClass}">${initials}</div>
@@ -1112,7 +1206,7 @@ function renderContacts(){
       </div>
       <div class="ci-meta"><span class="ci-time">${fmtTime(c.last_at)}</span>${pill}</div>
     </div>`;
-  }).join('');
+  }).join('') + (hiddenCount ? `<div class="empty-sb">Показаны первые ${renderLimit}. Используй поиск, чтобы найти остальные ${hiddenCount}.</div>` : '');
 }
 
 function renderChatFlags(contact){
@@ -1126,9 +1220,10 @@ function renderChatFlags(contact){
 
 function updateUnreadBadge(){
   const visibleContacts = hideOptedOutContacts ? contacts.filter(c=>!isOptedOutContact(c)) : contacts;
-  const n = visibleContacts.reduce((s,c)=>s+(c.unread||0),0);
+  const n = visibleContacts.reduce((s,c)=>s+(contactNeedsReply(c)?1:0),0);
   const b = document.getElementById('ubadge');
   b.textContent=n; b.classList.toggle('hidden',n===0);
+  document.title = n ? `(${n}) ${baseTitle}` : baseTitle;
 }
 
 document.getElementById('contact-search').addEventListener('input', renderContacts);
@@ -1140,7 +1235,7 @@ async function openChat(contact, myNum){
   currentContact = contact;
   currentChatMyNumber = String(myNum || getActiveSenderNumber()).trim() || MY_NUMBER;
   if(previousContact !== currentContact || previousSender !== currentChatMyNumber){
-    lastMessagesPayload = '';
+    lastMessagesPayload = null;
     currentMessages = [];
   }
   const c = contacts.find(x=>x.contact===contact)||{};
@@ -1182,7 +1277,7 @@ async function loadMsgs({full=false}={}){
     } else {
       currentMessages = msgs;
     }
-    const payloadKey = JSON.stringify(currentMessages);
+    const payloadKey = messagesPayloadKey(currentMessages);
     if(payloadKey === lastMessagesPayload) return;
     lastMessagesPayload = payloadKey;
     renderMsgs(currentMessages);
@@ -1270,7 +1365,7 @@ async function openContactPanel(phone){
 function collapseContact(){
   currentContact = null;
   currentChatMyNumber = getActiveSenderNumber();
-  lastMessagesPayload = '';
+  lastMessagesPayload = null;
   currentMessages = [];
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');

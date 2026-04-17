@@ -142,6 +142,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .av.needs-reply{border-color:var(--yel);color:var(--yel);background:rgba(255,209,102,.08);box-shadow:0 0 0 1px rgba(255,209,102,.18),0 0 16px rgba(255,209,102,.08)}
 .av.needs-reply::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--yel);border:2px solid var(--s1)}
 .av.waiting{border-color:var(--b2);color:var(--td);background:var(--s2)}
+.av.completed{border-color:rgba(90,98,128,.55);color:var(--tm);background:rgba(34,37,56,.45)}
 .av.unread::after{content:'';position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--s1)}
 .av.twoway{border-color:var(--a);color:var(--a)}
 .av.opted-out{border-color:var(--red);color:var(--red);background:rgba(255,79,106,.08)}
@@ -156,6 +157,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .p-unread{background:rgba(255,79,106,.15);color:var(--red)}
 .p-need{background:rgba(255,209,102,.15);color:var(--yel)}
 .p-wait{background:rgba(90,98,128,.14);color:var(--td)}
+.p-done{background:rgba(90,98,128,.12);color:var(--tm)}
 .p-out{background:var(--s3);color:var(--td)}
 .p-optout{background:rgba(255,79,106,.18);color:var(--red)}
 
@@ -270,6 +272,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .chat-flags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .chat-flag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;border:1px solid var(--b);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.04em;color:var(--td);background:var(--s2)}
 .chat-flag.stop{border-color:rgba(255,79,106,.28);color:var(--red);background:rgba(255,79,106,.12)}
+.chat-flag.done{border-color:rgba(90,98,128,.38);color:var(--td);background:rgba(90,98,128,.1)}
 .chat-live{display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--a)}
 .hd{width:6px;height:6px;border-radius:50%;background:var(--a);box-shadow:0 0 6px var(--aglow)}
 #msgs{flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:4px;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
@@ -356,6 +359,16 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .cp-input::placeholder,.cp-textarea::placeholder{color:var(--tm)}
 .cp-input:focus,.cp-textarea:focus{border-color:var(--a)}
 .cp-textarea{resize:none;height:80px;line-height:1.5}
+.complete-box{padding:0 16px 14px}
+.btn-complete{
+  width:100%;min-height:56px;border-radius:12px;border:1px solid rgba(255,209,102,.26);
+  background:linear-gradient(135deg, rgba(255,209,102,.18), rgba(79,255,176,.08));
+  color:var(--yel);cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;
+  font-weight:700;letter-spacing:.08em;text-transform:uppercase;transition:all .15s;
+}
+.btn-complete:hover{transform:translateY(-1px);border-color:rgba(255,209,102,.48);box-shadow:0 10px 26px rgba(255,209,102,.08)}
+.btn-complete.done{border-color:rgba(90,98,128,.28);background:rgba(90,98,128,.08);color:var(--td)}
+.complete-hint{margin-top:7px;font-size:10px;color:var(--td);line-height:1.45}
 
 /* Tags */
 .tags-wrap{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px}
@@ -683,6 +696,11 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
       <textarea class="cp-textarea" id="cp-notes" placeholder="Заметки о контакте..." oninput="schedSave()"></textarea>
     </div>
 
+    <div class="complete-box">
+      <button class="btn-complete" id="complete-btn" onclick="toggleConversationComplete()">Клиент завершён</button>
+      <div class="complete-hint" id="complete-hint">Закроет активную переписку. Если клиент напишет снова, он автоматически вернётся наверх.</div>
+    </div>
+
     <div class="cp-stats">
       <div class="cp-stats-title">Статистика</div>
       <div class="cps-row"><span class="cps-label">Отправлено</span><span class="cps-val green" id="cps-sent">—</span></div>
@@ -837,11 +855,16 @@ function latestInboundId(contact){
 }
 function contactNeedsReply(contact){
   if(isOptedOutContact(contact)) return false;
+  if(contactCompleted(contact)) return false;
   return Number(contact?.needs_reply||0) > 0 || contact?.last_direction === 'inbound';
 }
 function contactWaitingForCustomer(contact){
   if(isOptedOutContact(contact)) return false;
+  if(contactCompleted(contact)) return false;
   return Number(contact?.waiting_for_customer||0) > 0 || (contact?.last_direction === 'outbound' && Number(contact?.inbound_count||0) > 0);
+}
+function contactCompleted(contact){
+  return Number(contact?.conversation_completed||0) > 0;
 }
 function contactPreview(contact){
   const text = String(contact?.last_body || '').trim();
@@ -913,6 +936,8 @@ function contactsPayloadKey(items){
     c.last_inbound_id,
     c.needs_reply,
     c.waiting_for_customer,
+    c.conversation_completed,
+    c.conversation_completed_at,
     c.sms_opt_status,
     c.name,
     c.company,
@@ -1119,6 +1144,11 @@ async function loadContacts(){
     updateOptedOutToggleBtn();
     updateUnreadBadge();
     renderContacts();
+    if(currentContact){
+      const current = contacts.find(x=>x.contact===currentContact);
+      renderChatFlags(currentContact);
+      updateCompleteButton(current);
+    }
   }catch(e){}
   finally{contactsLoading = false;}
 }
@@ -1129,11 +1159,12 @@ function isOptedOutContact(contact){
 
 function contactPriority(contact){
   const inbound = Number(contact?.inbound_count||0) > 0;
-  if(isOptedOutContact(contact)) return 4;
+  if(isOptedOutContact(contact)) return 5;
   if(contactNeedsReply(contact)) return 0;
   if(contactWaitingForCustomer(contact)) return 2;
+  if(contactCompleted(contact)) return 3;
   if(inbound) return 1;
-  return 3;
+  return 4;
 }
 
 function sortContactsForList(items){
@@ -1189,6 +1220,7 @@ function renderContacts(){
     const twoway = Number(c.outbound_after_first_inbound_count||0)>0;
     const needsReply = contactNeedsReply(c);
     const waiting = contactWaitingForCustomer(c);
+    const completed = contactCompleted(c);
     const optedOut = c.sms_opt_status==='opted_out';
     const displayName = c.name||c.contact;
     const subline = c.name ? c.contact : `via ${c.my_number}`;
@@ -1196,9 +1228,10 @@ function renderContacts(){
     let pill = optedOut?`<span class="pill p-optout">STOP</span>`:
                needsReply?`<span class="pill p-need">${waitingCount>1?`+${waitingCount}`:'reply'}</span>`:
                waiting?`<span class="pill p-wait">waiting</span>`:
+               completed?`<span class="pill p-done">done</span>`:
                twoway?`<span class="pill p-active">2-way</span>`:
                `<span class="pill p-out">исх.</span>`;
-    const avClass = `av${needsReply?' needs-reply':''}${waiting?' waiting':''}${(!needsReply&&!waiting&&twoway)?' twoway':''}${optedOut?' opted-out':''}`;
+    const avClass = `av${needsReply?' needs-reply':''}${waiting?' waiting':''}${completed?' completed':''}${(!needsReply&&!waiting&&!completed&&twoway)?' twoway':''}${optedOut?' opted-out':''}`;
     const initials = (c.name?c.name.slice(0,2).toUpperCase():c.contact.slice(-4));
     return `<div class="contact-item${currentContact===c.contact?' active':''}" onclick="openChat('${c.contact}','${c.my_number}')">
       <div class="${avClass}">${initials}</div>
@@ -1216,6 +1249,9 @@ function renderChatFlags(contact){
   const flags = [];
   if(c.sms_opt_status==='opted_out'){
     flags.push('<span class="chat-flag stop">STOP / opted out</span>');
+  }
+  if(contactCompleted(c)){
+    flags.push('<span class="chat-flag done">completed</span>');
   }
   document.getElementById('chat-flags').innerHTML = flags.join('');
 }
@@ -1344,6 +1380,7 @@ async function openContactPanel(phone){
     document.getElementById('cp-name').value    = d.name    || '';
     document.getElementById('cp-company').value = d.company || '';
     document.getElementById('cp-notes').value   = d.notes   || '';
+    updateCompleteButton(contacts.find(x=>x.contact===phone) || d);
 
     // Tags
     currentTags = d.tags ? d.tags.split(',').map(t=>t.trim()).filter(Boolean) : [];
@@ -1362,6 +1399,47 @@ async function openContactPanel(phone){
     document.getElementById('cps-first').textContent = s.first_msg ? fmtDate(s.first_msg.slice(0,10)) : '—';
     document.getElementById('cps-last').textContent  = s.last_msg  ? fmtDate(s.last_msg.slice(0,10))  : '—';
   }catch(e){}
+}
+
+function updateCompleteButton(contact){
+  const btn = document.getElementById('complete-btn');
+  const hint = document.getElementById('complete-hint');
+  if(!btn || !hint) return;
+  const completed = contactCompleted(contact);
+  btn.dataset.completed = completed ? '1' : '0';
+  btn.classList.toggle('done', completed);
+  btn.textContent = completed ? 'Вернуть в активные' : 'Клиент завершён';
+  hint.textContent = completed
+    ? 'Диалог закрыт и не считается активным. Новое SMS от клиента снова поднимет его наверх.'
+    : 'Закроет активную переписку. Если клиент напишет снова, он автоматически вернётся наверх.';
+}
+
+async function toggleConversationComplete(){
+  if(!currentContact) return;
+  const btn = document.getElementById('complete-btn');
+  const completed = btn?.dataset.completed !== '1';
+  if(btn) btn.disabled = true;
+  try{
+    const d = await (await fetch(`/api/contact-complete/${encodeURIComponent(currentContact)}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({completed})
+    })).json();
+    if(!d.ok){
+      showToast('Не удалось обновить статус клиента','err');
+      return;
+    }
+    lastContactsPayload = null;
+    await loadContacts();
+    const current = contacts.find(x=>x.contact===currentContact);
+    updateCompleteButton(current || {conversation_completed: completed ? 1 : 0});
+    renderChatFlags(currentContact);
+    showToast(completed?'Клиент завершён':'Клиент вернулся в активные','ok');
+  }catch(e){
+    showToast('Сетевая ошибка','err');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
 
 function collapseContact(){

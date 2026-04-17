@@ -2151,6 +2151,7 @@ def init_db():
                 sms_opt_status TEXT DEFAULT 'unknown',
                 sms_last_keyword TEXT DEFAULT '',
                 sms_opted_out_at TEXT,
+                conversation_completed_at TEXT,
                 updated_at TEXT NOT NULL
             )
         """)
@@ -2262,6 +2263,7 @@ def init_db():
         cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_opt_status TEXT DEFAULT 'unknown'")
         cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_last_keyword TEXT DEFAULT ''")
         cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS sms_opted_out_at TEXT")
+        cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS conversation_completed_at TEXT")
         cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_requested INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_accepted INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE ringcentral_batches ADD COLUMN IF NOT EXISTS total_rejected INTEGER DEFAULT 0")
@@ -2390,11 +2392,12 @@ def api_contacts():
                 COALESCE(c.name,    '') AS name,
                 COALESCE(c.company, '') AS company,
                 COALESCE(c.tags,    '') AS tags,
-                COALESCE(c.sms_opt_status, 'unknown') AS sms_opt_status
+                COALESCE(c.sms_opt_status, 'unknown') AS sms_opt_status,
+                COALESCE(c.conversation_completed_at, '') AS conversation_completed_at
             FROM messages m
             LEFT JOIN contacts c ON c.phone = m.contact
             WHERE (%s = '' OR m.my_number = %s)
-            GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status
+            GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status, c.conversation_completed_at
         ),
         last_messages AS (
             SELECT DISTINCT ON (m.contact, m.my_number)
@@ -2427,19 +2430,38 @@ def api_contacts():
             cr.company,
             cr.tags,
             cr.sms_opt_status,
+            cr.conversation_completed_at,
+            CASE
+                WHEN COALESCE(cr.conversation_completed_at, '') <> ''
+                 AND (cr.last_inbound_at IS NULL OR cr.last_inbound_at <= cr.conversation_completed_at)
+                THEN 1 ELSE 0
+            END::int AS conversation_completed,
             CASE
                 WHEN lm.last_direction = 'inbound'
                  AND cr.sms_opt_status <> 'opted_out'
+                 AND NOT (
+                    COALESCE(cr.conversation_completed_at, '') <> ''
+                    AND (cr.last_inbound_at IS NULL OR cr.last_inbound_at <= cr.conversation_completed_at)
+                 )
                 THEN 1 ELSE 0
             END::int AS needs_reply,
             CASE
                 WHEN lm.last_direction = 'outbound'
                  AND cr.inbound_count > 0
                  AND cr.sms_opt_status <> 'opted_out'
+                 AND NOT (
+                    COALESCE(cr.conversation_completed_at, '') <> ''
+                    AND (cr.last_inbound_at IS NULL OR cr.last_inbound_at <= cr.conversation_completed_at)
+                 )
                 THEN 1 ELSE 0
             END::int AS waiting_for_customer,
             CASE
-                WHEN lm.last_direction = 'inbound' THEN (
+                WHEN lm.last_direction = 'inbound'
+                 AND NOT (
+                    COALESCE(cr.conversation_completed_at, '') <> ''
+                    AND (cr.last_inbound_at IS NULL OR cr.last_inbound_at <= cr.conversation_completed_at)
+                 )
+                THEN (
                     SELECT COUNT(*)::int
                     FROM messages mi
                     WHERE mi.contact = cr.contact
@@ -2520,7 +2542,8 @@ def api_contact_get(phone):
             SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS sent,
             SUM(CASE WHEN direction='inbound'  THEN 1 ELSE 0 END) AS received,
             MIN(created_at) AS first_msg,
-            MAX(created_at) AS last_msg
+            MAX(created_at) AS last_msg,
+            MAX(CASE WHEN direction='inbound' THEN created_at END) AS last_inbound_at
         FROM messages
         WHERE contact = %s
           AND (%s = '' OR my_number = %s)
@@ -2529,9 +2552,18 @@ def api_contact_get(phone):
     cur.close()
 
     result = dict(row) if row else {
-        "phone": phone, "name": "", "company": "", "tags": "", "notes": "", "sms_opt_status": "unknown"
+        "phone": phone,
+        "name": "",
+        "company": "",
+        "tags": "",
+        "notes": "",
+        "sms_opt_status": "unknown",
+        "conversation_completed_at": "",
     }
     result["stats"] = dict(stats) if stats else {}
+    completed_at = result.get("conversation_completed_at") or ""
+    last_inbound_at = (result["stats"] or {}).get("last_inbound_at") or ""
+    result["conversation_completed"] = 1 if completed_at and (not last_inbound_at or last_inbound_at <= completed_at) else 0
     return jsonify(result)
 
 
@@ -2558,6 +2590,34 @@ def api_contact_save(phone):
     db.commit()
     cur.close()
     return jsonify({"ok": True})
+
+
+@app.route("/api/contact-complete/<path:phone>", methods=["POST"])
+def api_contact_complete(phone):
+    body = request.get_json(silent=True) or {}
+    completed = bool(body.get("completed", True))
+    now = utcnow_iso()
+    completed_at = now if completed else None
+
+    db = get_db()
+    ensure_contact_row(db, phone)
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE contacts
+        SET conversation_completed_at = %s,
+            updated_at = %s
+        WHERE phone = %s
+        """,
+        (completed_at, now, phone),
+    )
+    db.commit()
+    cur.close()
+    return jsonify({
+        "ok": True,
+        "completed": completed,
+        "conversation_completed_at": completed_at or "",
+    })
 
 
 # ═══════════════════════════════════════════════════════
@@ -2636,7 +2696,8 @@ def api_stats():
             SELECT DISTINCT ON (m.contact, m.my_number)
                 m.contact,
                 m.my_number,
-                m.direction
+                m.direction,
+                m.created_at AS last_message_at
             FROM messages m
             WHERE (%s = '' OR m.my_number = %s)
             ORDER BY m.contact, m.my_number, m.created_at DESC, m.id DESC
@@ -2644,6 +2705,10 @@ def api_stats():
         LEFT JOIN contacts c ON c.phone = last_threads.contact
         WHERE last_threads.direction = 'inbound'
           AND COALESCE(c.sms_opt_status, 'unknown') <> 'opted_out'
+          AND (
+            COALESCE(c.conversation_completed_at, '') = ''
+            OR last_threads.last_message_at > c.conversation_completed_at
+          )
         """,
         (sender_number, sender_number)
     )

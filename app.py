@@ -2296,8 +2296,11 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_broadcast_id ON messages(broadcast_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_my_number ON messages(my_number)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_contact_created_at ON messages(my_number, contact, created_at DESC, id DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_id_desc ON messages(my_number, id DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_created_at ON messages(my_number, created_at DESC, id DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_direction_status_created_at ON messages(my_number, direction, status, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_broadcast_contact_created_at ON messages(contact, broadcast_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_updated_at ON contacts(updated_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_id ON broadcast_recipients(broadcast_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_status ON broadcast_recipients(broadcast_id, status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast_recent ON broadcast_recipients(broadcast_id, id DESC)")
@@ -2370,6 +2373,33 @@ def telnyx_webhook():
 #  API — Contacts list
 # ═══════════════════════════════════════════════════════
 
+@app.route("/api/activity")
+def api_activity():
+    db = get_db()
+    sender_number = request_sender_number()
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT
+            COALESCE(MAX(id), 0)::int AS max_message_id,
+            COALESCE(MAX(created_at), '') AS latest_message_at
+        FROM messages
+        WHERE (%s = '' OR my_number = %s)
+        """,
+        (sender_number, sender_number),
+    )
+    msg = cur.fetchone() or {}
+    cur.execute("SELECT COALESCE(MAX(updated_at), '') AS latest_contact_at FROM contacts")
+    contact = cur.fetchone() or {}
+    cur.close()
+    return jsonify({
+        "ok": True,
+        "max_message_id": msg.get("max_message_id") or 0,
+        "latest_message_at": msg.get("latest_message_at") or "",
+        "latest_contact_at": contact.get("latest_contact_at") or "",
+    })
+
+
 @app.route("/api/contacts")
 def api_contacts():
     db = get_db()
@@ -2381,14 +2411,18 @@ def api_contacts():
                 m.contact,
                 m.my_number,
                 MAX(m.created_at) AS last_at,
-                SUM(CASE WHEN m.direction='inbound'  THEN 1 ELSE 0 END)::int AS inbound_count,
-                SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END)::int AS outbound_count,
-                SUM(CASE WHEN m.direction='inbound' AND m.status='received' THEN 1 ELSE 0 END)::int AS unread,
+                COUNT(*) FILTER (WHERE m.direction='inbound')::int AS inbound_count,
+                COUNT(*) FILTER (WHERE m.direction='outbound')::int AS outbound_count,
+                COUNT(*) FILTER (WHERE m.direction='inbound' AND m.status='received')::int AS unread,
                 MAX(CASE WHEN m.direction='inbound' THEN m.id END)::int AS last_inbound_id,
                 MAX(CASE WHEN m.direction='outbound' THEN m.id END)::int AS last_outbound_id,
                 MAX(CASE WHEN m.direction='inbound' THEN m.created_at END) AS last_inbound_at,
                 MAX(CASE WHEN m.direction='outbound' THEN m.created_at END) AS last_outbound_at,
                 MIN(CASE WHEN m.direction='inbound' THEN m.created_at END) AS first_inbound_at,
+                (ARRAY_AGG(m.id ORDER BY m.created_at DESC, m.id DESC))[1]::int AS last_message_id,
+                (ARRAY_AGG(m.direction ORDER BY m.created_at DESC, m.id DESC))[1] AS last_direction,
+                (ARRAY_AGG(m.body ORDER BY m.created_at DESC, m.id DESC))[1] AS last_body,
+                (ARRAY_AGG(m.created_at ORDER BY m.created_at DESC, m.id DESC))[1] AS last_message_at,
                 COALESCE(c.name,    '') AS name,
                 COALESCE(c.company, '') AS company,
                 COALESCE(c.tags,    '') AS tags,
@@ -2398,18 +2432,6 @@ def api_contacts():
             LEFT JOIN contacts c ON c.phone = m.contact
             WHERE (%s = '' OR m.my_number = %s)
             GROUP BY m.contact, m.my_number, c.name, c.company, c.tags, c.sms_opt_status, c.conversation_completed_at
-        ),
-        last_messages AS (
-            SELECT DISTINCT ON (m.contact, m.my_number)
-                m.contact,
-                m.my_number,
-                m.id AS last_message_id,
-                m.direction AS last_direction,
-                m.body AS last_body,
-                m.created_at AS last_message_at
-            FROM messages m
-            WHERE (%s = '' OR m.my_number = %s)
-            ORDER BY m.contact, m.my_number, m.created_at DESC, m.id DESC
         )
         SELECT
             cr.contact,
@@ -2422,10 +2444,10 @@ def api_contacts():
             cr.last_outbound_id,
             cr.last_inbound_at,
             cr.last_outbound_at,
-            lm.last_message_id,
-            lm.last_direction,
-            lm.last_body,
-            lm.last_message_at,
+            cr.last_message_id,
+            cr.last_direction,
+            cr.last_body,
+            cr.last_message_at,
             cr.name,
             cr.company,
             cr.tags,
@@ -2437,7 +2459,7 @@ def api_contacts():
                 THEN 1 ELSE 0
             END::int AS conversation_completed,
             CASE
-                WHEN lm.last_direction = 'inbound'
+                WHEN cr.last_direction = 'inbound'
                  AND cr.sms_opt_status <> 'opted_out'
                  AND NOT (
                     COALESCE(cr.conversation_completed_at, '') <> ''
@@ -2446,7 +2468,7 @@ def api_contacts():
                 THEN 1 ELSE 0
             END::int AS needs_reply,
             CASE
-                WHEN lm.last_direction = 'outbound'
+                WHEN cr.last_direction = 'outbound'
                  AND cr.inbound_count > 0
                  AND cr.sms_opt_status <> 'opted_out'
                  AND NOT (
@@ -2456,38 +2478,24 @@ def api_contacts():
                 THEN 1 ELSE 0
             END::int AS waiting_for_customer,
             CASE
-                WHEN lm.last_direction = 'inbound'
+                WHEN cr.last_direction = 'inbound'
                  AND NOT (
                     COALESCE(cr.conversation_completed_at, '') <> ''
                     AND (cr.last_inbound_at IS NULL OR cr.last_inbound_at <= cr.conversation_completed_at)
                  )
-                THEN (
-                    SELECT COUNT(*)::int
-                    FROM messages mi
-                    WHERE mi.contact = cr.contact
-                      AND mi.my_number = cr.my_number
-                      AND mi.direction = 'inbound'
-                      AND (cr.last_outbound_at IS NULL OR mi.created_at > cr.last_outbound_at)
-                )
+                THEN 1
                 ELSE 0
             END::int AS inbound_waiting_count,
             CASE
-                WHEN cr.first_inbound_at IS NULL THEN 0
-                ELSE (
-                    SELECT COUNT(*)::int
-                    FROM messages mo
-                    WHERE mo.contact = cr.contact
-                      AND mo.my_number = cr.my_number
-                      AND mo.direction = 'outbound'
-                      AND mo.created_at > cr.first_inbound_at
-                )
+                WHEN cr.first_inbound_at IS NOT NULL
+                 AND cr.last_outbound_at IS NOT NULL
+                 AND cr.last_outbound_at > cr.first_inbound_at
+                THEN 1
+                ELSE 0
             END AS outbound_after_first_inbound_count
         FROM contact_rollup cr
-        LEFT JOIN last_messages lm
-          ON lm.contact = cr.contact
-         AND lm.my_number = cr.my_number
         ORDER BY cr.last_at DESC
-    """, (sender_number, sender_number, sender_number, sender_number))
+    """, (sender_number, sender_number))
     rows = cur.fetchall()
     cur.close()
     return jsonify([dict(r) for r in rows])
@@ -2497,30 +2505,41 @@ def api_contacts():
 def api_messages(contact):
     db = get_db()
     sender_number = request_sender_number()
-    try:
-        limit = int(request.args.get("limit", 250))
-    except (TypeError, ValueError):
-        limit = 250
-    limit = max(50, min(limit, 5000))
+    limit = max(20, min(coerce_int(request.args.get("limit"), 120), 500))
+    before_id = coerce_int(request.args.get("before_id"), 0)
+    before_clause = "AND id < %s" if before_id > 0 else ""
+    params = [contact, sender_number, sender_number]
+    if before_id > 0:
+        params.append(before_id)
+    params.append(limit + 1)
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        """
+        f"""
         SELECT *
         FROM (
             SELECT *
             FROM messages
             WHERE contact = %s
               AND (%s = '' OR my_number = %s)
+              {before_clause}
             ORDER BY created_at DESC, id DESC
             LIMIT %s
         ) recent_messages
         ORDER BY created_at ASC, id ASC
         """,
-        (contact, sender_number, sender_number, limit)
+        tuple(params)
     )
     rows = cur.fetchall()
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[1:]
     cur.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify({
+        "ok": True,
+        "messages": [dict(r) for r in rows],
+        "has_more": has_more,
+        "limit": limit,
+    })
 
 
 # ═══════════════════════════════════════════════════════

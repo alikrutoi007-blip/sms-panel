@@ -288,6 +288,8 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 .bs{font-size:9px}
 .empty-msg{color:var(--tm);font-style:italic}
 .ddiv{text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--tm);margin:8px 0 4px}
+.load-older{align-self:center;margin:2px 0 12px;padding:7px 12px;border-radius:999px;border:1px solid var(--b);background:var(--s2);color:var(--td);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.04em;cursor:pointer}
+.load-older:hover{border-color:var(--a);color:var(--a)}
 .input-row{padding:12px 16px;border-top:1px solid var(--b);background:var(--s1);display:flex;gap:8px;align-items:flex-end}
 #msg-inp{flex:1;background:var(--s2);border:1px solid var(--b);border-radius:9px;padding:9px 12px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:var(--t);outline:none;resize:none;max-height:110px;min-height:40px;line-height:1.5;transition:border-color .2s}
 #msg-inp::placeholder{color:var(--tm)}
@@ -768,6 +770,7 @@ let currentTab = 'all';
 let pollTimer = null;
 let bcPollTimer = null;
 let saveTimer = null;
+let contactRenderTimer = null;
 let currentTags = [];
 let lastLookupSummary = null;
 let lookupRunning = false;
@@ -785,12 +788,19 @@ let contactsLoading = false;
 let messagesLoading = false;
 let statsLoading = false;
 let broadcastStatusLoading = false;
+let activityLoading = false;
+let lastActivityKey = null;
+let currentMessagesHasMore = false;
+let pendingScrollRestore = null;
 const POLL_ACTIVE_MS = 15000;
 const POLL_HIDDEN_MS = 60000;
 const BROADCAST_POLL_MS = 7000;
 const LOOKUP_CHUNK_SIZE = 20;
-const CONTACT_RENDER_LIMIT = 450;
-const CONTACT_SEARCH_RENDER_LIMIT = 900;
+const CONTACT_RENDER_LIMIT = 260;
+const CONTACT_SEARCH_RENDER_LIMIT = 520;
+const MESSAGE_INITIAL_LIMIT = 180;
+const MESSAGE_POLL_LIMIT = 80;
+const MESSAGE_OLDER_LIMIT = 240;
 const ACTIVE_SENDER_STORAGE_KEY = 'active_sender_number';
 const HIDE_OPTOUT_STORAGE_KEY = 'hide_opted_out_contacts';
 let hideOptedOutContacts = false;
@@ -957,6 +967,15 @@ function messagesPayloadKey(items){
   return `${list.length}|${tail}`;
 }
 
+function activityPayloadKey(payload){
+  if(!payload) return '';
+  return [
+    payload.max_message_id || 0,
+    payload.latest_message_at || '',
+    payload.latest_contact_at || ''
+  ].join('|');
+}
+
 function getActiveSenderNumber(){
   return String(currentSender || MY_NUMBER || '').trim();
 }
@@ -1020,9 +1039,11 @@ function resetCurrentViewForSender(){
   currentChatMyNumber = getActiveSenderNumber();
   lastContactsPayload = null;
   lastMessagesPayload = null;
+  lastActivityKey = null;
   contactsPrimed = false;
   lastMsgIds = {};
   currentMessages = [];
+  currentMessagesHasMore = false;
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';
@@ -1130,6 +1151,34 @@ async function saveSenderProfile(){
 }
 
 // ─── CONTACTS ───
+async function loadActivityMarker({update=false}={}){
+  if(activityLoading) return false;
+  activityLoading = true;
+  try{
+    const payload = await (await fetch(buildApiUrl('/api/activity',{my_number:getActiveSenderNumber()}))).json();
+    if(!payload.ok) return false;
+    const key = activityPayloadKey(payload);
+    const changed = key !== lastActivityKey;
+    if(update || changed) lastActivityKey = key;
+    return changed;
+  }catch(e){
+    return false;
+  }finally{
+    activityLoading = false;
+  }
+}
+
+async function pollForUpdates(){
+  const changed = await loadActivityMarker();
+  if(!changed) {
+    if(currentContact && !document.hidden) await loadMsgs();
+    return;
+  }
+  await loadContacts();
+  if(currentContact && !document.hidden) await loadMsgs();
+  if(!document.hidden) await loadStats();
+}
+
 async function loadContacts(){
   if(contactsLoading) return;
   contactsLoading = true;
@@ -1244,6 +1293,11 @@ function renderContacts(){
   }).join('') + (hiddenCount ? `<div class="empty-sb">Показаны первые ${renderLimit}. Используй поиск, чтобы найти остальные ${hiddenCount}.</div>` : '');
 }
 
+function scheduleRenderContacts(){
+  clearTimeout(contactRenderTimer);
+  contactRenderTimer = setTimeout(renderContacts, 90);
+}
+
 function renderChatFlags(contact){
   const c = contacts.find(x=>x.contact===contact)||{};
   const flags = [];
@@ -1264,7 +1318,7 @@ function updateUnreadBadge(){
   document.title = n ? `(${n}) ${baseTitle}` : baseTitle;
 }
 
-document.getElementById('contact-search').addEventListener('input', renderContacts);
+document.getElementById('contact-search').addEventListener('input', scheduleRenderContacts);
 
 // ─── CHAT ───
 async function openChat(contact, myNum){
@@ -1275,6 +1329,7 @@ async function openChat(contact, myNum){
   if(previousContact !== currentContact || previousSender !== currentChatMyNumber){
     lastMessagesPayload = null;
     currentMessages = [];
+    currentMessagesHasMore = false;
   }
   const c = contacts.find(x=>x.contact===contact)||{};
   const displayName = c.name||contact;
@@ -1292,34 +1347,52 @@ async function openChat(contact, myNum){
   renderChatFlags(contact);
 
   renderContacts();
-  await loadMsgs({full:true});
+  await loadMsgs({initial:true});
   await openContactPanel(contact);
   startPoll();
 }
 
-async function loadMsgs({full=false}={}){
+async function loadMsgs({initial=false,older=false}={}){
   if(!currentContact) return;
   if(messagesLoading) return;
   messagesLoading = true;
   try{
-    const msgs = await (await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(currentContact)}`,{
+    const area = document.getElementById('msgs');
+    const beforeId = older && currentMessages.length
+      ? Math.min(...currentMessages.map(m=>Number(m.id)||0).filter(Boolean))
+      : 0;
+    if(older && beforeId && area){
+      pendingScrollRestore = {top: area.scrollTop, height: area.scrollHeight};
+    }
+    const limit = older ? MESSAGE_OLDER_LIMIT : initial ? MESSAGE_INITIAL_LIMIT : MESSAGE_POLL_LIMIT;
+    const payload = await (await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(currentContact)}`,{
       my_number:getCurrentChatSenderNumber(),
-      limit:full?5000:250
+      limit,
+      before_id: beforeId || ''
     }))).json();
-    if(full){
+    const msgs = Array.isArray(payload) ? payload : (payload.messages || []);
+    if(initial){
       currentMessages = msgs;
+      currentMessagesHasMore = !!payload.has_more;
+    } else if(older){
+      const byId = new Map(msgs.concat(currentMessages).map(m=>[String(m.id),m]));
+      currentMessages = [...byId.values()].sort((a,b)=>(Number(a.id)||0)-(Number(b.id)||0));
+      currentMessagesHasMore = !!payload.has_more;
     } else if(currentMessages.length){
       const byId = new Map(currentMessages.map(m=>[String(m.id),m]));
       msgs.forEach(m=>byId.set(String(m.id),m));
       currentMessages = [...byId.values()].sort((a,b)=>(Number(a.id)||0)-(Number(b.id)||0));
     } else {
       currentMessages = msgs;
+      currentMessagesHasMore = !!payload.has_more;
     }
     const payloadKey = messagesPayloadKey(currentMessages);
-    if(payloadKey === lastMessagesPayload) return;
+    if(payloadKey === lastMessagesPayload && !older) return;
     lastMessagesPayload = payloadKey;
     renderMsgs(currentMessages);
-  }catch(e){}
+  }catch(e){
+    if(older) pendingScrollRestore = null;
+  }
   finally{messagesLoading = false;}
 }
 
@@ -1327,6 +1400,9 @@ function renderMsgs(msgs){
   const area = document.getElementById('msgs');
   const atBot = area.scrollHeight-area.scrollTop-area.clientHeight < 80;
   let lastDate=null, html='';
+  if(currentMessagesHasMore){
+    html += '<button class="load-older" onclick="loadOlderMsgs()">Load older messages</button>';
+  }
   msgs.forEach(m=>{
     const d=m.created_at.slice(0,10);
     if(d!==lastDate){html+=`<div class="ddiv">${fmtDate(d)}</div>`;lastDate=d;}
@@ -1337,7 +1413,17 @@ function renderMsgs(msgs){
     html+=`<div class="mr ${dir}"><div class="bbl">${bodyHtml}<div class="bm"><span class="bt">${m.created_at.slice(11,16)}</span>${si}</div></div></div>`;
   });
   area.innerHTML=html;
-  if(atBot||msgs.length===0) area.scrollTop=area.scrollHeight;
+  if(pendingScrollRestore){
+    area.scrollTop = area.scrollHeight - pendingScrollRestore.height + pendingScrollRestore.top;
+    pendingScrollRestore = null;
+  } else if(atBot||msgs.length===0) {
+    area.scrollTop=area.scrollHeight;
+  }
+}
+
+async function loadOlderMsgs(){
+  if(!currentMessagesHasMore || messagesLoading) return;
+  await loadMsgs({older:true});
 }
 
 async function sendMsg(){
@@ -1356,7 +1442,7 @@ async function sendMsg(){
         from:getCurrentChatSenderNumber()
       })
     })).json();
-    if(d.ok){await loadMsgs();await loadContacts();}
+    if(d.ok){await loadMsgs();await loadContacts();await loadActivityMarker({update:true});}
     else showToast('Ошибка: '+(d.error||'?'),'err');
   }catch(e){showToast('Сетевая ошибка','err');}
   btn.disabled=false; inp.focus();
@@ -1431,6 +1517,7 @@ async function toggleConversationComplete(){
     }
     lastContactsPayload = null;
     await loadContacts();
+    await loadActivityMarker({update:true});
     const current = contacts.find(x=>x.contact===currentContact);
     updateCompleteButton(current || {conversation_completed: completed ? 1 : 0});
     renderChatFlags(currentContact);
@@ -1447,6 +1534,7 @@ function collapseContact(){
   currentChatMyNumber = getActiveSenderNumber();
   lastMessagesPayload = null;
   currentMessages = [];
+  currentMessagesHasMore = false;
   document.getElementById('panel-dash').classList.remove('hidden');
   document.getElementById('panel-contact').classList.remove('visible');
   document.getElementById('chat-view').style.display='none';
@@ -1501,6 +1589,7 @@ async function saveContact(){
     setTimeout(()=>ind.classList.remove('show'),2000);
     // Update contacts list to show new name
     await loadContacts();
+    await loadActivityMarker({update:true});
   }catch(e){}
 }
 
@@ -1540,6 +1629,7 @@ async function quickSend(){
       showToast('Отправлено!','ok');
       await loadContacts();
       await openChat(to, getActiveSenderNumber());
+      await loadActivityMarker({update:true});
     } else showToast('Ошибка: '+(d.error||'?'),'err');
   }catch(e){showToast('Сетевая ошибка','err');}
 }
@@ -1897,7 +1987,7 @@ async function sendNew(){
   if(!to||!text){showToast('Заполни все поля','err');return;}
   try{
     const d=await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,text,from:getActiveSenderNumber()})})).json();
-    if(d.ok){closeModal();showToast('Отправлено!','ok');await loadContacts();await openChat(to,getActiveSenderNumber());}
+    if(d.ok){closeModal();showToast('Отправлено!','ok');await loadContacts();await openChat(to,getActiveSenderNumber());await loadActivityMarker({update:true});}
     else showToast('Ошибка: '+(d.error||'?'),'err');
   }catch(e){showToast('Сетевая ошибка','err');}
 }
@@ -1906,18 +1996,13 @@ async function sendNew(){
 function startPoll(){
   clearInterval(pollTimer);
   const interval = document.hidden ? POLL_HIDDEN_MS : POLL_ACTIVE_MS;
-  pollTimer=setInterval(async()=>{
-    await loadContacts();
-    if(currentContact && !document.hidden) await loadMsgs();
-  },interval);
+  pollTimer=setInterval(pollForUpdates,interval);
 }
 
 document.addEventListener('visibilitychange',()=>{
   startPoll();
   if(!document.hidden){
-    loadContacts();
-    if(currentContact) loadMsgs();
-    loadStats();
+    pollForUpdates();
   }
 });
 
@@ -2049,6 +2134,7 @@ async function initApp(){
   updateOptedOutToggleBtn();
   await loadContacts();
   await loadStats();
+  await loadActivityMarker({update:true});
   if(currentTab==='broadcast'){
     await loadBCHistory();
   }
@@ -2061,8 +2147,8 @@ resetLookupSummary();
 resetBroadcastDiagnostics();
 initApp();
 
-// Обновляем статистику каждые 30 сек
-setInterval(()=>{if(!document.hidden) loadStats();}, 60000);
+// Lightweight safety refresh. Heavy contact/message loads are gated by /api/activity.
+setInterval(()=>{if(!document.hidden) pollForUpdates();}, 60000);
 </script>
 </body>
 </html>

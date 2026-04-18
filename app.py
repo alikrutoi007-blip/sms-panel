@@ -2639,6 +2639,18 @@ def api_contact_complete(phone):
     })
 
 
+@app.route("/api/contact-optout/<path:phone>", methods=["POST"])
+def api_contact_optout(phone):
+    db = get_db()
+    set_contact_sms_status(db, phone, "opted_out", "MANUAL")
+    db.commit()
+    return jsonify({
+        "ok": True,
+        "sms_opt_status": "opted_out",
+        "message": "Contact was manually opted out",
+    })
+
+
 # ═══════════════════════════════════════════════════════
 #  API — Full-text search
 # ═══════════════════════════════════════════════════════

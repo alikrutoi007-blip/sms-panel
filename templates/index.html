@@ -370,6 +370,14 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
 }
 .btn-complete:hover{transform:translateY(-1px);border-color:rgba(255,209,102,.48);box-shadow:0 10px 26px rgba(255,209,102,.08)}
 .btn-complete.done{border-color:rgba(90,98,128,.28);background:rgba(90,98,128,.08);color:var(--td)}
+.btn-optout{
+  width:100%;min-height:52px;margin-top:12px;border-radius:12px;border:1px solid rgba(255,90,122,.34);
+  background:linear-gradient(135deg, rgba(255,90,122,.20), rgba(255,90,122,.06));
+  color:#ff7d98;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;
+  font-weight:700;letter-spacing:.08em;text-transform:uppercase;transition:all .15s;
+}
+.btn-optout:hover{transform:translateY(-1px);border-color:rgba(255,90,122,.58);box-shadow:0 10px 26px rgba(255,90,122,.10)}
+.btn-optout.on{cursor:not-allowed;border-color:rgba(90,98,128,.28);background:rgba(255,90,122,.07);color:#ff9caf}
 .complete-hint{margin-top:7px;font-size:10px;color:var(--td);line-height:1.45}
 
 /* Tags */
@@ -693,14 +701,13 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--t);
       </div>
     </div>
 
-    <div class="cp-field">
-      <div class="cp-label">Заметки</div>
-      <textarea class="cp-textarea" id="cp-notes" placeholder="Заметки о контакте..." oninput="schedSave()"></textarea>
-    </div>
+    <input type="hidden" id="cp-notes" value="">
 
     <div class="complete-box">
       <button class="btn-complete" id="complete-btn" onclick="toggleConversationComplete()">Клиент завершён</button>
       <div class="complete-hint" id="complete-hint">Закроет активную переписку. Если клиент напишет снова, он автоматически вернётся наверх.</div>
+      <button class="btn-optout" id="manual-optout-btn" onclick="markManualOptOut()">Opted out / не писать</button>
+      <div class="complete-hint" id="manual-optout-hint">Запретит обычные сообщения и рассылки этому номеру.</div>
     </div>
 
     <div class="cp-stats">
@@ -1197,6 +1204,7 @@ async function loadContacts(){
       const current = contacts.find(x=>x.contact===currentContact);
       renderChatFlags(currentContact);
       updateCompleteButton(current);
+      updateManualOptOutButton(current);
     }
   }catch(e){}
   finally{contactsLoading = false;}
@@ -1430,6 +1438,10 @@ async function sendMsg(){
   const inp = document.getElementById('msg-inp');
   const text = inp.value.trim();
   if(!text||!currentContact) return;
+  if(isOptedOutContact(contacts.find(x=>x.contact===currentContact))){
+    showToast('Клиент opted out - SMS запрещены','err');
+    return;
+  }
   const btn = document.getElementById('send-btn');
   btn.disabled=true; inp.value=''; inp.style.height='';
   try{
@@ -1467,6 +1479,7 @@ async function openContactPanel(phone){
     document.getElementById('cp-company').value = d.company || '';
     document.getElementById('cp-notes').value   = d.notes   || '';
     updateCompleteButton(contacts.find(x=>x.contact===phone) || d);
+    updateManualOptOutButton(contacts.find(x=>x.contact===phone) || d);
 
     // Tags
     currentTags = d.tags ? d.tags.split(',').map(t=>t.trim()).filter(Boolean) : [];
@@ -1500,6 +1513,19 @@ function updateCompleteButton(contact){
     : 'Закроет активную переписку. Если клиент напишет снова, он автоматически вернётся наверх.';
 }
 
+function updateManualOptOutButton(contact){
+  const btn = document.getElementById('manual-optout-btn');
+  const hint = document.getElementById('manual-optout-hint');
+  if(!btn || !hint) return;
+  const optedOut = isOptedOutContact(contact);
+  btn.classList.toggle('on', optedOut);
+  btn.disabled = optedOut;
+  btn.textContent = optedOut ? 'Opted out включён' : 'Opted out / не писать';
+  hint.textContent = optedOut
+    ? 'SMS на этот номер заблокированы. Вернуть можно только если клиент сам напишет START.'
+    : 'Запретит обычные сообщения и рассылки этому номеру.';
+}
+
 async function toggleConversationComplete(){
   if(!currentContact) return;
   const btn = document.getElementById('complete-btn');
@@ -1520,12 +1546,45 @@ async function toggleConversationComplete(){
     await loadActivityMarker({update:true});
     const current = contacts.find(x=>x.contact===currentContact);
     updateCompleteButton(current || {conversation_completed: completed ? 1 : 0});
+    updateManualOptOutButton(current);
     renderChatFlags(currentContact);
     showToast(completed?'Клиент завершён':'Клиент вернулся в активные','ok');
   }catch(e){
     showToast('Сетевая ошибка','err');
   }finally{
     if(btn) btn.disabled = false;
+  }
+}
+
+async function markManualOptOut(){
+  if(!currentContact) return;
+  const btn = document.getElementById('manual-optout-btn');
+  if(btn?.disabled) return;
+  if(!confirm('Пометить клиента как opted out? После этого сайт не даст отправлять ему SMS и рассылки.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    const d = await (await fetch(`/api/contact-optout/${encodeURIComponent(currentContact)}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({manual:true})
+    })).json();
+    if(!d.ok){
+      showToast('Не удалось поставить opted out','err');
+      return;
+    }
+    lastContactsPayload = null;
+    await loadContacts();
+    await loadActivityMarker({update:true});
+    const current = contacts.find(x=>x.contact===currentContact) || {sms_opt_status:'opted_out'};
+    updateManualOptOutButton(current);
+    updateCompleteButton(current);
+    renderChatFlags(currentContact);
+    showToast('Клиент помечен opted out','ok');
+  }catch(e){
+    showToast('Сетевая ошибка','err');
+  }finally{
+    const current = contacts.find(x=>x.contact===currentContact);
+    if(btn && !isOptedOutContact(current)) btn.disabled = false;
   }
 }
 
